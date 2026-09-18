@@ -1,0 +1,276 @@
+// crypto-average-price-tracker — local SQLite schema.
+//
+// Conventions
+//  - Every quantity, price and money amount is stored as TEXT holding a canonical
+//    decimal string (see src/domain/decimal.ts toStorageString). SQLite's NUMERIC /
+//    REAL affinity keeps only ~15 significant digits, which would silently corrupt
+//    crypto amounts, so Prisma's Float/Decimal types are deliberately not used.
+//  - Imported records keep the untouched provider payload in raw_json.
+//  - Imports are idempotent via (provider_account_id, external_*_id) unique keys.
+//  - Nothing here is Kraken-specific: providers are rows, not tables.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+/// A supported data source implementation: "kraken", later "coinbase", "wallet-evm"...
+model Provider {
+  id        String            @id @default(cuid())
+  /// Implementation key, matches ProviderDefinition.type.
+  type      String            @unique
+  /// "exchange" | "wallet"
+  kind      String
+  name      String
+  createdAt DateTime          @default(now()) @map("created_at")
+  accounts  ProviderAccount[]
+
+  @@map("providers")
+}
+
+/// One connected account/wallet of a provider.
+model ProviderAccount {
+  id                   String    @id @default(cuid())
+  providerId           String    @map("provider_id")
+  displayName          String    @map("display_name")
+  /// AES-256-GCM encrypted credential JSON (never sent to the client, never logged).
+  encryptedCredentials String?   @map("encrypted_credentials")
+  /// Set ONLY when a sync completes successfully. Never advanced on failure.
+  lastSuccessfulSyncAt DateTime? @map("last_successful_sync_at")
+  createdAt            DateTime  @default(now()) @map("created_at")
+  updatedAt            DateTime  @updatedAt @map("updated_at")
+
+  provider      Provider          @relation(fields: [providerId], references: [id])
+  trades        Trade[]
+  transfers     Transfer[]
+  ledgerEntries LedgerEntry[]
+  balances      BalanceSnapshot[]
+  lots          Lot[]
+  syncRuns      SyncRun[]
+
+  @@map("provider_accounts")
+}
+
+/// Normalized spot trade execution (fill). Source data — never edited to force reconciliation.
+model Trade {
+  id                String   @id @default(cuid())
+  providerAccountId String   @map("provider_account_id")
+  externalTradeId   String   @map("external_trade_id")
+  externalOrderId   String?  @map("external_order_id")
+  baseAsset         String   @map("base_asset")
+  quoteAsset        String   @map("quote_asset")
+  /// "buy" | "sell"
+  side              String
+  quantity          String
+  price             String
+  grossValue        String   @map("gross_value")
+  fee               String
+  feeAsset          String?  @map("fee_asset")
+  executedAt        DateTime @map("executed_at")
+  rawJson           String   @map("raw_json")
+  /// "rest" | "websocket" — which channel first delivered the record.
+  receivedVia       String   @default("rest") @map("received_via")
+  importedAt        DateTime @default(now()) @map("imported_at")
+
+  providerAccount ProviderAccount @relation(fields: [providerAccountId], references: [id])
+  sourcedLots     Lot[]
+  lotMatches      LotMatch[]
+
+  @@unique([providerAccountId, externalTradeId])
+  @@index([baseAsset, executedAt])
+  @@index([quoteAsset, executedAt])
+  @@map("trades")
+}
+
+/// Deposits, withdrawals, rewards and other non-trade movements.
+model Transfer {
+  id                 String   @id @default(cuid())
+  providerAccountId  String   @map("provider_account_id")
+  externalTransferId String   @map("external_transfer_id")
+  /// "in" | "out"
+  direction          String
+  /// "deposit" | "withdrawal" | "transfer" | "reward" | "adjustment"
+  kind               String
+  asset              String
+  quantity           String
+  fee                String
+  feeAsset           String?  @map("fee_asset")
+  occurredAt         DateTime @map("occurred_at")
+  txHash             String?  @map("tx_hash")
+  rawJson            String   @map("raw_json")
+  importedAt         DateTime @default(now()) @map("imported_at")
+
+  providerAccount ProviderAccount @relation(fields: [providerAccountId], references: [id])
+  sourcedLots     Lot[]
+  lotMatches      LotMatch[]
+
+  @@unique([providerAccountId, externalTransferId])
+  @@index([asset, occurredAt])
+  @@index([txHash])
+  @@map("transfers")
+}
+
+/// Provider ledger lines, for audit and reconciliation.
+model LedgerEntry {
+  id                  String   @id @default(cuid())
+  providerAccountId   String   @map("provider_account_id")
+  externalLedgerId    String   @map("external_ledger_id")
+  externalReferenceId String?  @map("external_reference_id")
+  entryType           String   @map("entry_type")
+  asset               String
+  /// Signed balance change.
+  amount              String
+  fee                 String
+  balanceAfter        String?  @map("balance_after")
+  occurredAt          DateTime @map("occurred_at")
+  rawJson             String   @map("raw_json")
+  importedAt          DateTime @default(now()) @map("imported_at")
+
+  providerAccount ProviderAccount @relation(fields: [providerAccountId], references: [id])
+
+  @@unique([providerAccountId, externalLedgerId])
+  @@index([asset, occurredAt])
+  @@index([externalReferenceId])
+  @@map("ledger_entries")
+}
+
+/// Provider-reported balances captured at each successful sync.
+model BalanceSnapshot {
+  id                String   @id @default(cuid())
+  providerAccountId String   @map("provider_account_id")
+  syncRunId         String?  @map("sync_run_id")
+  asset             String
+  total             String
+  available         String?
+  asOf              DateTime @map("as_of")
+  rawJson           String   @map("raw_json")
+
+  providerAccount ProviderAccount @relation(fields: [providerAccountId], references: [id])
+  syncRun         SyncRun?        @relation(fields: [syncRunId], references: [id])
+
+  @@index([providerAccountId, asset, asOf])
+  @@map("balance_snapshots")
+}
+
+/// Materialized lot projection, rebuilt deterministically by the lot engine from
+/// trades/transfers + lot_matches + manual_valuations. The id is the stable
+/// acquisition key (e.g. "trade:<account>:<externalId>:base") so user decisions
+/// survive rebuilds.
+model Lot {
+  id                String   @id
+  providerAccountId String   @map("provider_account_id")
+  sourceTradeId     String?  @map("source_trade_id")
+  sourceTransferId  String?  @map("source_transfer_id")
+  asset             String
+  originalQuantity  String   @map("original_quantity")
+  remainingQuantity String   @map("remaining_quantity")
+  /// Execution price as traded, and the asset it is quoted in.
+  acquisitionPrice  String?  @map("acquisition_price")
+  priceAsset        String?  @map("price_asset")
+  /// Total cost incl. fee in reporting currency; NULL = unknown.
+  acquisitionCost   String?  @map("acquisition_cost")
+  acquisitionFee    String?  @map("acquisition_fee")
+  remainingCost     String?  @map("remaining_cost")
+  acquiredAt        DateTime @map("acquired_at")
+  /// "known" | "manual" | "unknown"
+  costBasisStatus   String   @map("cost_basis_status")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  providerAccount ProviderAccount @relation(fields: [providerAccountId], references: [id])
+  sourceTrade     Trade?          @relation(fields: [sourceTradeId], references: [id])
+  sourceTransfer  Transfer?       @relation(fields: [sourceTransferId], references: [id])
+  matches         LotMatch[]
+
+  @@index([asset, acquiredAt])
+  @@map("lots")
+}
+
+/// A user decision assigning part of a disposal (sale or withdrawal) to a lot.
+/// quantity is the decision; the allocated_* / realized_pnl columns are a
+/// snapshot recomputed by the lot engine (NULL when a value is unknown).
+model LotMatch {
+  id                       String   @id @default(cuid())
+  /// Stable disposal key, e.g. "trade:<account>:<externalId>:base".
+  disposalKey              String   @map("disposal_key")
+  /// "sale" | "transfer_out"
+  matchType                String   @map("match_type")
+  sellTradeId              String?  @map("sell_trade_id")
+  transferId               String?  @map("transfer_id")
+  lotId                    String   @map("lot_id")
+  quantity                 String
+  allocatedAcquisitionCost String?  @map("allocated_acquisition_cost")
+  allocatedBuyFee          String?  @map("allocated_buy_fee")
+  grossSaleProceeds        String?  @map("gross_sale_proceeds")
+  allocatedSellFee         String?  @map("allocated_sell_fee")
+  realizedPnl              String?  @map("realized_pnl")
+  createdAt                DateTime @default(now()) @map("created_at")
+  updatedAt                DateTime @updatedAt @map("updated_at")
+
+  lot       Lot       @relation(fields: [lotId], references: [id])
+  sellTrade Trade?    @relation(fields: [sellTradeId], references: [id])
+  transfer  Transfer? @relation(fields: [transferId], references: [id])
+
+  @@index([disposalKey])
+  @@index([lotId])
+  @@map("lot_matches")
+}
+
+/// User-entered valuation for an acquisition's cost basis (e.g. a deposit) or a
+/// disposal's proceeds, where the provider data cannot determine it.
+model ManualValuation {
+  id        String   @id @default(cuid())
+  /// "acquisition" | "disposal"
+  targetType String  @map("target_type")
+  /// Acquisition (lot) id or disposal key.
+  targetKey String   @map("target_key")
+  gross     String
+  fee       String
+  note      String?
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([targetType, targetKey])
+  @@map("manual_valuations")
+}
+
+/// Latest market prices. Market data only — never accounting truth.
+model PriceCache {
+  id         String   @id @default(cuid())
+  source     String
+  baseAsset  String   @map("base_asset")
+  quoteAsset String   @map("quote_asset")
+  price      String
+  asOf       DateTime @map("as_of")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  @@unique([source, baseAsset, quoteAsset])
+  @@map("price_cache")
+}
+
+/// One synchronization attempt, for status display and debugging.
+model SyncRun {
+  id                String    @id @default(cuid())
+  providerAccountId String    @map("provider_account_id")
+  /// "initial" | "recovery" | "manual" | "periodic" | "reconnect"
+  mode              String
+  /// "running" | "succeeded" | "failed" | "interrupted"
+  status            String
+  startedAt         DateTime  @map("started_at")
+  finishedAt        DateTime? @map("finished_at")
+  syncFrom          DateTime? @map("sync_from")
+  syncTo            DateTime  @map("sync_to")
+  recordsReceived   Int       @default(0) @map("records_received")
+  recordsInserted   Int       @default(0) @map("records_inserted")
+  /// Redacted; never contains credentials.
+  errorMessage      String?   @map("error_message")
+
+  providerAccount ProviderAccount   @relation(fields: [providerAccountId], references: [id])
+  balances        BalanceSnapshot[]
+
+  @@index([providerAccountId, startedAt])
+  @@map("sync_runs")
+}
