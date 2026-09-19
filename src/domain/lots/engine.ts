@@ -114,6 +114,9 @@ export function runLotEngine(input: LotEngineInput): LotEngineResult {
   }
 
   issues.push(...findHistoryShortfalls(input.acquisitions, input.disposals));
+  for (const f of input.dataQualityFlags ?? []) {
+    issues.push({ code: "data_quality", asset: f.asset, reason: f.reason, detail: f.detail, sourceKey: f.sourceKey });
+  }
 
   return { lots: finishedLots, allocations, disposals: disposalStates, issues };
 }

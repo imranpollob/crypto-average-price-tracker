@@ -1,5 +1,5 @@
 import { type Decimal, ONE_HUNDRED, sum, ZERO } from "../decimal";
-import type { EngineIssue, LotEngineResult } from "../lots/types";
+import type { DisposalState, EngineIssue, Lot, LotEngineResult } from "../lots/types";
 import {
   type IncompleteReason,
   incomplete,
@@ -73,15 +73,22 @@ export function calculatePositionMetrics(
   const openLotQuantity = sum(openLots.map((l) => l.remainingQuantity));
 
   // Problems that make any lot-based figure unreliable.
-  const structural: IncompleteReason[] = [];
+  const qualityReasons = dataQualityReasons(issues);
+  const structural: IncompleteReason[] = [...qualityReasons];
   if (has("invalid_lot_match")) structural.push("invalid_lot_match");
   if (has("insufficient_history")) structural.push("insufficient_history");
+  // When the quantity itself is unreliable, so is anything valued from it.
+  const holdingsReasons = structural.filter(
+    (r): r is "insufficient_history" | "reconciliation_mismatch" =>
+      r === "insufficient_history" || r === "reconciliation_mismatch",
+  );
+  const lotsById = new Map(lots.map((l) => [l.id, l]));
 
   // --- Open position -------------------------------------------------------
   const openReasons = [...structural];
   if (has("unmatched_sale")) openReasons.push("unmatched_sale");
   if (has("unresolved_transfer_out")) openReasons.push("unresolved_transfer_out");
-  if (openLots.some((l) => l.remainingCost === null)) openReasons.push("unknown_cost_basis");
+  openReasons.push(...unknownCostReasons(openLots));
 
   let costBasis: Metric;
   let averageCost: Metric;
@@ -103,7 +110,7 @@ export function calculatePositionMetrics(
   // --- Market value --------------------------------------------------------
   const priceMetric: Metric = currentPrice ? known(currentPrice) : incomplete(["missing_price"]);
   let currentValue: Metric;
-  if (has("insufficient_history")) currentValue = incomplete(["insufficient_history"]);
+  if (holdingsReasons.length > 0) currentValue = incomplete(holdingsReasons);
   else if (holdings.isZero()) currentValue = known(ZERO);
   else if (currentPrice) currentValue = known(currentPrice.times(holdings));
   else currentValue = incomplete(["missing_price"]);
@@ -113,10 +120,12 @@ export function calculatePositionMetrics(
   const saleAllocations = allocations.filter((a) => a.kind === "sale");
   const realizedReasons = [...structural];
   if (sales.some((d) => d.unmatchedQuantity.greaterThan(0))) realizedReasons.push("unmatched_sale");
-  if (sales.some((d) => d.proceeds?.status === "unknown")) realizedReasons.push("unknown_proceeds");
-  if (saleAllocations.some((a) => a.allocatedAcquisitionCost === null)) {
-    realizedReasons.push("unknown_cost_basis");
-  }
+  realizedReasons.push(...unknownProceedsReasons(sales));
+  realizedReasons.push(
+    ...unknownCostReasons(
+      saleAllocations.filter((a) => a.allocatedAcquisitionCost === null).map((a) => lotsById.get(a.lotId)!),
+    ),
+  );
   const realizedPnl =
     realizedReasons.length > 0
       ? incomplete(realizedReasons)
@@ -193,7 +202,7 @@ export function economicTotalPnl(
     reasons.push("unresolved_transfer_out");
   }
   const sales = disposals.filter((d) => d.disposal.kind === "sale");
-  if (sales.some((d) => d.proceeds?.status !== "known")) reasons.push("unknown_proceeds");
+  reasons.push(...unknownProceedsReasons(sales));
 
   const soldFrom = new Set(allocations.filter((a) => a.kind === "sale").map((a) => a.lotId));
   let lotCost = ZERO;
@@ -202,7 +211,7 @@ export function economicTotalPnl(
       lotCost = lotCost.plus(lot.acquisitionCost);
     } else if (lot.remainingQuantity.greaterThan(0) || soldFrom.has(lot.id)) {
       // Unknown cost only cancels out if the whole lot was transferred away.
-      reasons.push("unknown_cost_basis");
+      reasons.push(...unknownCostReasons([lot]));
     }
   }
   if (reasons.length > 0 || currentValue.status !== "known") return incomplete(reasons);
@@ -219,4 +228,30 @@ export function economicTotalPnl(
       .map((a) => a.allocatedAcquisitionCost!),
   );
   return known(netProceeds.plus(currentValue.value).minus(lotCost).plus(transferredCost));
+}
+
+/** Reasons from data-quality issues (flags from flows, imports and reconciliation). */
+function dataQualityReasons(issues: readonly EngineIssue[]): IncompleteReason[] {
+  return issues.flatMap((i) => (i.code === "data_quality" ? [i.reason] : []));
+}
+
+/** Lots with unknown cost; a fee in another asset is additionally named as an unvalued fee. */
+function unknownCostReasons(lots: readonly Lot[]): IncompleteReason[] {
+  const out: IncompleteReason[] = [];
+  for (const l of lots) {
+    if (l.remainingCost !== null && l.acquisitionCost !== null) continue;
+    out.push("unknown_cost_basis");
+    if (l.unknownCostReason === "fee_in_other_asset") out.push("unvalued_fee");
+  }
+  return out;
+}
+
+function unknownProceedsReasons(sales: readonly DisposalState[]): IncompleteReason[] {
+  const out: IncompleteReason[] = [];
+  for (const d of sales) {
+    if (d.proceeds?.status === "known") continue;
+    out.push("unknown_proceeds");
+    if (d.proceeds?.status === "unknown" && d.proceeds.reason === "fee_in_other_asset") out.push("unvalued_fee");
+  }
+  return out;
 }

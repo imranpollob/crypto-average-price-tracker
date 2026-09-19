@@ -195,13 +195,42 @@ export type EngineIssue =
       readonly providerAccountId: string;
       readonly shortfall: Decimal;
     }
-  | { readonly code: "orphan_manual_valuation"; readonly targetId: string };
+  | { readonly code: "orphan_manual_valuation"; readonly targetId: string }
+  | {
+      /** A problem found outside the lot engine that makes this asset's history unreliable. */
+      readonly code: "data_quality";
+      readonly asset: AssetCode;
+      readonly reason: DataQualityReason;
+      readonly detail: string;
+      readonly sourceKey: string | null;
+    };
+
+/**
+ * Reasons a whole asset's figures cannot be trusted, detected outside the
+ * lot engine (while deriving flows, importing provider data, or reconciling).
+ */
+export type DataQualityReason =
+  | "unvalued_fee"
+  | "unsupported_activity"
+  | "insufficient_history"
+  | "reconciliation_mismatch";
+
+export interface DataQualityFlag {
+  readonly asset: AssetCode;
+  readonly reason: DataQualityReason;
+  /** Human-readable explanation, safe to display. */
+  readonly detail: string;
+  /** Record that caused it, when there is one. */
+  readonly sourceKey: string | null;
+}
 
 export interface LotEngineInput {
   readonly acquisitions: readonly Acquisition[];
   readonly disposals: readonly Disposal[];
   readonly matches: readonly LotMatchInstruction[];
   readonly manualValuations?: readonly ManualValuation[];
+  /** Asset-level problems from flows, imports or reconciliation; reported as issues. */
+  readonly dataQualityFlags?: readonly DataQualityFlag[];
 }
 
 export interface LotEngineResult {

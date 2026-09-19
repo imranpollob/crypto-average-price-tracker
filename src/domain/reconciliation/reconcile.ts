@@ -1,6 +1,6 @@
 import { type AccountingConfig, isCash } from "../accounting/config";
 import { type Decimal, ZERO } from "../decimal";
-import type { LotEngineResult } from "../lots/types";
+import type { Acquisition, DataQualityFlag, Disposal, LotEngineResult } from "../lots/types";
 import type { AssetCode, NormalizedBalance } from "../transactions/types";
 
 /**
@@ -32,19 +32,50 @@ export interface ReconciliationReport {
   readonly reconciled: boolean;
 }
 
+type Movement = { readonly providerAccountId: string; readonly asset: AssetCode; readonly quantity: Decimal };
+
+function netHoldings(inflows: readonly Movement[], outflows: readonly Movement[]): CalculatedHolding[] {
+  const totals = new Map<string, CalculatedHolding>();
+  const add = (m: Movement, delta: Decimal) => {
+    const k = `${m.providerAccountId}\u0000${m.asset}`;
+    const prev = totals.get(k)?.quantity ?? ZERO;
+    totals.set(k, { providerAccountId: m.providerAccountId, asset: m.asset, quantity: prev.plus(delta) });
+  };
+  for (const m of inflows) add(m, m.quantity);
+  for (const m of outflows) add(m, m.quantity.negated());
+  return [...totals.values()];
+}
+
+/**
+ * Net quantity per (account, asset) straight from asset flows. Independent of
+ * lot matching, so it can be computed before (and fed into) the lot engine.
+ */
+export function holdingsFromFlows(
+  acquisitions: readonly Acquisition[],
+  disposals: readonly Disposal[],
+): CalculatedHolding[] {
+  return netHoldings(acquisitions, disposals);
+}
+
 /** Net quantity per (account, asset) from lot-engine output. */
 export function holdingsByAccount(engine: LotEngineResult): CalculatedHolding[] {
-  const totals = new Map<string, CalculatedHolding>();
-  const add = (providerAccountId: string, asset: AssetCode, delta: Decimal) => {
-    const k = `${providerAccountId}\u0000${asset}`;
-    const prev = totals.get(k)?.quantity ?? ZERO;
-    totals.set(k, { providerAccountId, asset, quantity: prev.plus(delta) });
-  };
-  for (const l of engine.lots) add(l.providerAccountId, l.asset, l.originalQuantity);
-  for (const d of engine.disposals) {
-    add(d.disposal.providerAccountId, d.disposal.asset, d.disposal.quantity.negated());
-  }
-  return [...totals.values()];
+  return netHoldings(
+    engine.lots.map((l) => ({ providerAccountId: l.providerAccountId, asset: l.asset, quantity: l.originalQuantity })),
+    engine.disposals.map((d) => d.disposal),
+  );
+}
+
+/**
+ * An unresolved mismatch means history does not explain the provider balance,
+ * so every figure for that asset is unreliable until it is investigated.
+ */
+export function reconciliationFlags(report: ReconciliationReport): DataQualityFlag[] {
+  return report.mismatches.map((r) => ({
+    asset: r.asset,
+    reason: "reconciliation_mismatch" as const,
+    detail: `Calculated ${r.calculated.toFixed()} vs. provider ${r.reported.toFixed()} (difference ${r.difference.toFixed()})`,
+    sourceKey: null,
+  }));
 }
 
 export function reconcileBalances(params: {

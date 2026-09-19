@@ -2,7 +2,7 @@ import { type AccountingConfig, createAccountingConfig } from "@/domain/accounti
 import { type Decimal, dec } from "@/domain/decimal";
 import { runLotEngine } from "@/domain/lots/engine";
 import { deriveAssetFlows } from "@/domain/lots/flows";
-import type { LotEngineResult, LotMatchInstruction, ManualValuation } from "@/domain/lots/types";
+import type { DataQualityFlag, LotEngineResult, LotMatchInstruction, ManualValuation } from "@/domain/lots/types";
 import { calculatePositionMetrics, type PositionMetrics } from "@/domain/pnl/position";
 import { tradeKey, transferKey } from "@/domain/transactions/identity";
 import type {
@@ -118,6 +118,8 @@ export function scenario(params: {
   transfers?: NormalizedTransfer[];
   matches?: LotMatchInstruction[];
   valuations?: ManualValuation[];
+  /** Extra flags (e.g. from reconciliation or imports), merged with those from flows. */
+  flags?: DataQualityFlag[];
   config?: AccountingConfig;
 }): Scenario {
   const config = params.config ?? createAccountingConfig("USD");
@@ -127,6 +129,7 @@ export function scenario(params: {
     disposals: flows.disposals,
     matches: params.matches ?? [],
     manualValuations: params.valuations ?? [],
+    dataQualityFlags: [...flows.flags, ...(params.flags ?? [])],
   });
   return {
     engine,

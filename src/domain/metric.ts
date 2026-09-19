@@ -16,8 +16,14 @@ export type IncompleteReason =
   | "unknown_proceeds"
   /** A stored lot match is inconsistent with the transaction history. */
   | "invalid_lot_match"
-  /** More was disposed than was ever acquired: history is missing. */
+  /** Transaction history is missing (negative running balance, or flagged by a data source). */
   | "insufficient_history"
+  /** A fee was charged in an asset whose reporting-currency value is unknown. */
+  | "unvalued_fee"
+  /** Imported activity the engine cannot account for (unsupported ledger type, margin...). */
+  | "unsupported_activity"
+  /** Calculated holdings disagree with the provider-reported balance. */
+  | "reconciliation_mismatch"
   /** No current market price is available. */
   | "missing_price";
 

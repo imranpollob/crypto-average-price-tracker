@@ -2,7 +2,7 @@ import { type AccountingConfig, isCash } from "../accounting/config";
 import { type Decimal, ZERO } from "../decimal";
 import { tradeKey, transferKey } from "../transactions/identity";
 import type { AssetCode, NormalizedTrade, NormalizedTransfer } from "../transactions/types";
-import type { Acquisition, Disposal, Valuation } from "./types";
+import type { Acquisition, DataQualityFlag, Disposal, Valuation } from "./types";
 
 /**
  * Translate normalized trades and transfers into per-asset acquisitions and
@@ -23,6 +23,8 @@ export interface DerivedFlows {
   readonly acquisitions: Acquisition[];
   readonly disposals: Disposal[];
   readonly warnings: FlowWarning[];
+  /** Asset-level problems to pass to the lot engine (`dataQualityFlags`). */
+  readonly flags: DataQualityFlag[];
 }
 
 export interface FlowWarning {
@@ -51,6 +53,39 @@ function valuation(
   return { status: "known", gross: g, fee: f };
 }
 
+/**
+ * A fee paid in a tracked asset that is not otherwise part of the record
+ * (e.g. a trade fee in a third coin, a withdrawal fee in another coin) reduces
+ * that asset's holdings with no flow recording it, and has no known value.
+ * Flag the fee asset rather than silently ignoring the fee.
+ */
+function flagForeignFee(
+  config: AccountingConfig,
+  out: DerivedFlows,
+  sourceKey: string,
+  fee: Decimal,
+  feeAsset: AssetCode | null,
+  involved: readonly AssetCode[],
+): void {
+  if (fee.isZero() || !feeAsset || involved.includes(feeAsset) || isCash(config, feeAsset)) return;
+  out.flags.push({
+    asset: feeAsset,
+    reason: "unvalued_fee",
+    detail: `${fee.toFixed()} ${feeAsset} fee is not recorded as a disposal and has no known value`,
+    sourceKey,
+  });
+}
+
+function feeExceedsQuantity(out: DerivedFlows, sourceKey: string, asset: AssetCode): void {
+  out.warnings.push({ sourceKey, code: "fee_exceeds_quantity" });
+  out.flags.push({
+    asset,
+    reason: "unsupported_activity",
+    detail: "Fee is larger than the quantity traded; the record cannot be accounted for",
+    sourceKey,
+  });
+}
+
 function tradeFlows(t: NormalizedTrade, config: AccountingConfig, out: DerivedFlows): void {
   const key = tradeKey(t);
   const base = t.baseAsset;
@@ -73,6 +108,7 @@ function tradeFlows(t: NormalizedTrade, config: AccountingConfig, out: DerivedFl
   const feeInQuote = feeAsset === quote;
   // Fee charged in base units, expressed in quote at the execution price.
   const baseFeeInQuote = feeInBase ? fee.times(t.price) : ZERO;
+  flagForeignFee(config, out, key, fee, feeAsset, [base, quote]);
   const common = {
     provider: t.provider,
     providerAccountId: t.providerAccountId,
@@ -84,7 +120,7 @@ function tradeFlows(t: NormalizedTrade, config: AccountingConfig, out: DerivedFl
     if (baseTracked) {
       const received = feeInBase ? t.quantity.minus(fee) : t.quantity;
       if (!received.greaterThan(0)) {
-        out.warnings.push({ sourceKey: key, code: "fee_exceeds_quantity" });
+        feeExceedsQuantity(out, key, base);
       } else {
         const cost = feeInBase
           ? valuation(
@@ -161,7 +197,7 @@ function tradeFlows(t: NormalizedTrade, config: AccountingConfig, out: DerivedFl
   if (quoteTracked) {
     const received = feeInQuote ? t.grossValue.minus(fee) : t.grossValue;
     if (!received.greaterThan(0)) {
-      out.warnings.push({ sourceKey: key, code: "fee_exceeds_quantity" });
+      feeExceedsQuantity(out, key, quote);
     } else {
       // Receiving a crypto asset from a sale acquires it; its cost is the value
       // of what was given up, known only if the base is the reporting currency.
@@ -182,8 +218,9 @@ function tradeFlows(t: NormalizedTrade, config: AccountingConfig, out: DerivedFl
 }
 
 function transferFlows(t: NormalizedTransfer, config: AccountingConfig, out: DerivedFlows): void {
-  if (isCash(config, t.asset)) return;
   const key = transferKey(t);
+  flagForeignFee(config, out, key, t.fee, t.feeAsset, [t.asset]);
+  if (isCash(config, t.asset)) return;
   const feeInAsset = !t.fee.isZero() && t.feeAsset === t.asset ? t.fee : ZERO;
   const common = {
     provider: t.provider,
@@ -235,7 +272,7 @@ export function deriveAssetFlows(
   transfers: readonly NormalizedTransfer[],
   config: AccountingConfig,
 ): DerivedFlows {
-  const out: DerivedFlows = { acquisitions: [], disposals: [], warnings: [] };
+  const out: DerivedFlows = { acquisitions: [], disposals: [], warnings: [], flags: [] };
   for (const t of trades) tradeFlows(t, config, out);
   for (const t of transfers) transferFlows(t, config, out);
   return out;
