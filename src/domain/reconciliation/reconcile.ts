@@ -1,4 +1,4 @@
-import { type AccountingConfig, isCash } from "../accounting/config";
+import { type AccountingConfig, isTracked } from "../accounting/config";
 import { type Decimal, ZERO } from "../decimal";
 import type { Acquisition, DataQualityFlag, Disposal, LotEngineResult } from "../lots/types";
 import type { AssetCode, NormalizedBalance } from "../transactions/types";
@@ -95,14 +95,14 @@ export function reconcileBalances(params: {
     }
     return r;
   };
-  // Cash is not lot-tracked, so there is nothing to reconcile it against.
+  // Cash and fee credits are not lot-tracked, so there is nothing to reconcile them against.
   for (const c of params.calculated) {
-    if (isCash(params.config, c.asset)) continue;
+    if (!isTracked(params.config, c.asset)) continue;
     const r = row(c.providerAccountId, c.asset);
     r.calc = r.calc.plus(c.quantity);
   }
   for (const b of params.reported) {
-    if (isCash(params.config, b.asset)) continue;
+    if (!isTracked(params.config, b.asset)) continue;
     const r = row(b.providerAccountId, b.asset);
     r.rep = r.rep.plus(b.total);
   }

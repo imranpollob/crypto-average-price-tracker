@@ -1,10 +1,12 @@
 import { type Decimal, dec, toStorageString } from "@/domain/decimal";
 import type {
+  FeeSource,
   LedgerEntryType,
   NormalizedBalance,
   NormalizedLedgerEntry,
   NormalizedTrade,
   NormalizedTransfer,
+  TradeOrigin,
   TradeSide,
   TransferDirection,
   TransferKind,
@@ -60,6 +62,8 @@ export function tradeToRow(t: NormalizedTrade) {
     fee: d2s(t.fee),
     feeAsset: t.feeAsset,
     executedAt: t.executedAt,
+    origin: t.origin ?? "exchange",
+    feeSource: t.feeSource ?? null,
     rawJson: toRawJson(t.rawData),
   };
 }
@@ -79,6 +83,8 @@ export function rowToTrade(row: Trade, provider: string): NormalizedTrade {
     fee: s2d(row.fee),
     feeAsset: row.feeAsset,
     executedAt: row.executedAt,
+    origin: oneOf<TradeOrigin>(row.origin, ["exchange", "ledger"], "trade origin"),
+    ...(row.feeSource ? { feeSource: oneOf<FeeSource>(row.feeSource, ["ledger", "fee_credit", "trade_record", "ledger_uncharged"], "fee source") } : {}),
     rawData: parseRaw(row.rawJson),
   };
 }
@@ -122,6 +128,8 @@ export function ledgerToRow(e: NormalizedLedgerEntry) {
     externalLedgerId: e.externalLedgerId,
     externalReferenceId: e.externalReferenceId,
     entryType: e.entryType,
+    providerEntryType: e.providerEntryType,
+    providerSubtype: e.providerSubtype,
     asset: e.asset,
     amount: d2s(e.amount),
     fee: d2s(e.fee),
@@ -142,6 +150,8 @@ export function rowToLedger(row: LedgerEntry, provider: string): NormalizedLedge
       ["trade", "deposit", "withdrawal", "transfer", "reward", "fee", "adjustment", "other"],
       "entry type",
     ),
+    providerEntryType: row.providerEntryType,
+    providerSubtype: row.providerSubtype,
     asset: row.asset,
     amount: s2d(row.amount),
     fee: s2d(row.fee),

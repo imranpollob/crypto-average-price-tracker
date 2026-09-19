@@ -1,4 +1,4 @@
-import { type AccountingConfig, isCash } from "../accounting/config";
+import { type AccountingConfig, isFeeCredit, isTracked } from "../accounting/config";
 import { type Decimal, ZERO } from "../decimal";
 import { tradeKey, transferKey } from "../transactions/identity";
 import type { AssetCode, NormalizedTrade, NormalizedTransfer } from "../transactions/types";
@@ -17,6 +17,10 @@ import type { Acquisition, DataQualityFlag, Disposal, Valuation } from "./types"
  *                 proceeds.gross = (qty + fee) × price, proceeds.fee = fee × price
  * Values are only "known" when denominated in R. Otherwise they are marked
  * unknown and must be supplied manually — no FX rate is ever guessed.
+ *
+ * Fee credits (provider-internal fee tokens, see AccountingConfig): a fee paid
+ * with them has zero cost to the portfolio, because no asset or cash left it.
+ * The usage is recorded on the flow as `feeCredit`, and on the trade itself.
  */
 
 export interface DerivedFlows {
@@ -36,6 +40,7 @@ type Amount = { readonly amount: Decimal; readonly asset: AssetCode };
 
 function valueInReporting(config: AccountingConfig, a: Amount): Decimal | null {
   if (a.amount.isZero()) return ZERO;
+  if (isFeeCredit(config, a.asset)) return ZERO;
   return a.asset === config.reportingCurrency ? a.amount : null;
 }
 
@@ -67,7 +72,7 @@ function flagForeignFee(
   feeAsset: AssetCode | null,
   involved: readonly AssetCode[],
 ): void {
-  if (fee.isZero() || !feeAsset || involved.includes(feeAsset) || isCash(config, feeAsset)) return;
+  if (fee.isZero() || !feeAsset || involved.includes(feeAsset) || !isTracked(config, feeAsset)) return;
   out.flags.push({
     asset: feeAsset,
     reason: "unvalued_fee",
@@ -90,8 +95,8 @@ function tradeFlows(t: NormalizedTrade, config: AccountingConfig, out: DerivedFl
   const key = tradeKey(t);
   const base = t.baseAsset;
   const quote = t.quoteAsset;
-  const baseTracked = !isCash(config, base);
-  const quoteTracked = !isCash(config, quote);
+  const baseTracked = isTracked(config, base);
+  const quoteTracked = isTracked(config, quote);
 
   if (!baseTracked && !quoteTracked) {
     out.warnings.push({ sourceKey: key, code: "cash_only_trade" });
@@ -109,11 +114,13 @@ function tradeFlows(t: NormalizedTrade, config: AccountingConfig, out: DerivedFl
   // Fee charged in base units, expressed in quote at the execution price.
   const baseFeeInQuote = feeInBase ? fee.times(t.price) : ZERO;
   flagForeignFee(config, out, key, fee, feeAsset, [base, quote]);
+  const feeCredit = feeAsset && isFeeCredit(config, feeAsset) ? { amount: fee, asset: feeAsset } : undefined;
   const common = {
     provider: t.provider,
     providerAccountId: t.providerAccountId,
     sourceType: "trade" as const,
     sourceKey: key,
+    ...(feeCredit ? { feeCredit } : {}),
   };
 
   if (t.side === "buy") {
@@ -220,7 +227,7 @@ function tradeFlows(t: NormalizedTrade, config: AccountingConfig, out: DerivedFl
 function transferFlows(t: NormalizedTransfer, config: AccountingConfig, out: DerivedFlows): void {
   const key = transferKey(t);
   flagForeignFee(config, out, key, t.fee, t.feeAsset, [t.asset]);
-  if (isCash(config, t.asset)) return;
+  if (!isTracked(config, t.asset)) return;
   const feeInAsset = !t.fee.isZero() && t.feeAsset === t.asset ? t.fee : ZERO;
   const common = {
     provider: t.provider,

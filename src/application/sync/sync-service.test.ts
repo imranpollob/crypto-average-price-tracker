@@ -74,7 +74,7 @@ describe("initial sync", () => {
     const r = expectOk(await service().sync(p, "manual"));
     expect(r.mode).toBe("initial");
     expect(r.syncFrom).toBeNull();
-    expect(r.counts).toEqual({ received: 3, inserted: 3, duplicates: 0 });
+    expect(r.counts).toMatchObject({ received: 3, inserted: 3, duplicates: 0 });
     expect(await store.getLastSuccessfulSyncAt(accountId)).toEqual(clock);
     expect((await repo.loadLatestBalances(accountId))[0]!.total.toFixed()).toBe("200");
 
@@ -93,7 +93,7 @@ describe("#21 duplicate imported transactions", () => {
     expectOk(await service().sync(p, "manual"));
     clock = at("2026-09-24T12:01:00Z");
     const second = expectOk(await service().sync(p, "manual"));
-    expect(second.counts).toEqual({ received: 1, inserted: 0, duplicates: 1 });
+    expect(second.counts).toMatchObject({ received: 1, inserted: 0, duplicates: 1 });
     expect(await db.trade.count()).toBe(1);
   });
 
@@ -240,7 +240,7 @@ describe("#24 startup recovery", () => {
 
     expect(r.mode).toBe("recovery");
     expect(r.syncFrom).toEqual(new Date(at("2026-09-24T12:00:00Z").getTime() - minutes(5)));
-    expect(r.counts).toEqual({ received: 2, inserted: 2, duplicates: 0 });
+    expect(r.counts).toMatchObject({ received: 2, inserted: 2, duplicates: 0 });
     expect(await store.getLastSuccessfulSyncAt(accountId)).toEqual(clock);
     expect(await db.syncRun.count({ where: { status: "interrupted" } })).toBe(1);
 

@@ -44,13 +44,14 @@ model ProviderAccount {
   createdAt            DateTime  @default(now()) @map("created_at")
   updatedAt            DateTime  @updatedAt @map("updated_at")
 
-  provider      Provider          @relation(fields: [providerId], references: [id])
-  trades        Trade[]
-  transfers     Transfer[]
-  ledgerEntries LedgerEntry[]
-  balances      BalanceSnapshot[]
-  lots          Lot[]
-  syncRuns      SyncRun[]
+  provider        Provider               @relation(fields: [providerId], references: [id])
+  trades          Trade[]
+  transfers       Transfer[]
+  ledgerEntries   LedgerEntry[]
+  balances        BalanceSnapshot[]
+  lots            Lot[]
+  syncRuns        SyncRun[]
+  reconciliations ReconciliationResult[]
 
   @@map("provider_accounts")
 }
@@ -72,6 +73,10 @@ model Trade {
   feeAsset          String?  @map("fee_asset")
   executedAt        DateTime @map("executed_at")
   rawJson           String   @map("raw_json")
+  /// "exchange" (provider trade history) | "ledger" (derived from linked ledger records)
+  origin            String   @default("exchange")
+  /// "ledger" | "fee_credit" | "trade_record" | "ledger_uncharged"
+  feeSource         String?  @map("fee_source")
   /// "rest" | "websocket" — which channel first delivered the record.
   receivedVia       String   @default("rest") @map("received_via")
   importedAt        DateTime @default(now()) @map("imported_at")
@@ -120,7 +125,11 @@ model LedgerEntry {
   providerAccountId   String   @map("provider_account_id")
   externalLedgerId    String   @map("external_ledger_id")
   externalReferenceId String?  @map("external_reference_id")
+  /// Normalized category; "other" = unsupported, requires review.
   entryType           String   @map("entry_type")
+  /// Provider's own type / subtype labels.
+  providerEntryType   String   @map("provider_entry_type")
+  providerSubtype     String?  @map("provider_subtype")
   asset               String
   /// Signed balance change.
   amount              String
@@ -222,16 +231,16 @@ model LotMatch {
 /// User-entered valuation for an acquisition's cost basis (e.g. a deposit) or a
 /// disposal's proceeds, where the provider data cannot determine it.
 model ManualValuation {
-  id        String   @id @default(cuid())
+  id         String   @id @default(cuid())
   /// "acquisition" | "disposal"
-  targetType String  @map("target_type")
+  targetType String   @map("target_type")
   /// Acquisition (lot) id or disposal key.
-  targetKey String   @map("target_key")
-  gross     String
-  fee       String
-  note      String?
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
+  targetKey  String   @map("target_key")
+  gross      String
+  fee        String
+  note       String?
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
 
   @@unique([targetType, targetKey])
   @@map("manual_valuations")
@@ -265,12 +274,44 @@ model SyncRun {
   syncTo            DateTime  @map("sync_to")
   recordsReceived   Int       @default(0) @map("records_received")
   recordsInserted   Int       @default(0) @map("records_inserted")
+  tradesReceived    Int       @default(0) @map("trades_received")
+  tradesInserted    Int       @default(0) @map("trades_inserted")
+  ledgerReceived    Int       @default(0) @map("ledger_received")
+  ledgerInserted    Int       @default(0) @map("ledger_inserted")
+  transfersReceived Int       @default(0) @map("transfers_received")
+  transfersInserted Int       @default(0) @map("transfers_inserted")
+  balancesRetrieved Int       @default(0) @map("balances_retrieved")
+  /// Normalized error category (ProviderErrorCode, "database", "unknown").
+  errorCategory     String?   @map("error_category")
   /// Redacted; never contains credentials.
   errorMessage      String?   @map("error_message")
 
-  providerAccount ProviderAccount   @relation(fields: [providerAccountId], references: [id])
+  providerAccount ProviderAccount        @relation(fields: [providerAccountId], references: [id])
   balances        BalanceSnapshot[]
+  reconciliations ReconciliationResult[]
 
   @@index([providerAccountId, startedAt])
   @@map("sync_runs")
+}
+
+/// Calculated holdings vs. provider balance, recorded atomically with each
+/// successful sync. Mismatches are kept for investigation, never "fixed".
+model ReconciliationResult {
+  id                String   @id @default(cuid())
+  syncRunId         String   @map("sync_run_id")
+  providerAccountId String   @map("provider_account_id")
+  asset             String
+  calculated        String
+  reported          String
+  /// reported − calculated
+  difference        String
+  /// "reconciled" | "mismatch"
+  status            String
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  syncRun         SyncRun         @relation(fields: [syncRunId], references: [id])
+  providerAccount ProviderAccount @relation(fields: [providerAccountId], references: [id])
+
+  @@index([providerAccountId, createdAt])
+  @@map("reconciliation_results")
 }

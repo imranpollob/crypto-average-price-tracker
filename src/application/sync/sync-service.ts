@@ -1,3 +1,10 @@
+import { type AccountingConfig, createAccountingConfig } from "@/domain/accounting/config";
+import { deriveAssetFlows } from "@/domain/lots/flows";
+import {
+  holdingsFromFlows,
+  reconcileBalances,
+  type ReconciliationRow,
+} from "@/domain/reconciliation/reconcile";
 import { planSyncWindow } from "@/domain/sync/window";
 import { validateBatch } from "@/domain/transactions/validate";
 import type {
@@ -7,7 +14,7 @@ import type {
   NormalizedTransfer,
 } from "@/domain/transactions/types";
 import { safeErrorMessage } from "@/lib/redact";
-import { type PortfolioProvider, ProviderError } from "@/providers/types";
+import { type PortfolioProvider, ProviderError, type ProviderErrorCode } from "@/providers/types";
 
 /**
  * Provider-agnostic REST synchronization ("REST makes the portfolio correct").
@@ -17,14 +24,12 @@ import { type PortfolioProvider, ProviderError } from "@/providers/types";
  *   3. fetch everything from the provider — nothing is written yet
  *   4. validate every record
  *   5. in ONE transaction: insert new records (idempotent), store the balance
- *      snapshot, mark the run succeeded, advance last_successful_sync_at
+ *      snapshot, reconcile full history against those balances, mark the run
+ *      succeeded, advance last_successful_sync_at
  *
  * Any failure before or during step 5 leaves the database exactly as it was
  * apart from the failed sync_run row: the previous timestamp is preserved and
  * the next run re-fetches the same window.
- *
- * Later phases extend the pipeline (reconciliation, prices, lot rebuild) via
- * the application layer; the store contract stays the same.
  */
 
 export type SyncMode = "initial" | "recovery" | "manual" | "periodic" | "reconnect";
@@ -36,13 +41,38 @@ export interface SyncBatch {
   readonly balances: readonly NormalizedBalance[];
 }
 
+export interface TypeCounts {
+  readonly received: number;
+  readonly inserted: number;
+}
+
 export interface PersistCounts {
+  /** Totals over trades, transfers and ledger entries. */
   readonly received: number;
   readonly inserted: number;
   readonly duplicates: number;
+  readonly trades: TypeCounts;
+  readonly transfers: TypeCounts;
+  readonly ledgerEntries: TypeCounts;
+  readonly balances: number;
 }
 
-/** Persistence port. Implemented by the Prisma repository (and an in-memory fake if needed). */
+/**
+ * Compares the account's complete stored history (including this batch) with
+ * the balances just fetched. Runs inside the commit transaction.
+ */
+export type Reconciler = (input: {
+  readonly trades: readonly NormalizedTrade[];
+  readonly transfers: readonly NormalizedTransfer[];
+  readonly balances: readonly NormalizedBalance[];
+}) => readonly ReconciliationRow[];
+
+export interface CommitResult {
+  readonly counts: PersistCounts;
+  readonly reconciliation: readonly ReconciliationRow[];
+}
+
+/** Persistence port. Implemented by the Prisma repository. */
 export interface SyncStore {
   getLastSuccessfulSyncAt(providerAccountId: string): Promise<Date | null>;
   startSyncRun(run: {
@@ -52,18 +82,29 @@ export interface SyncStore {
     syncTo: Date;
     startedAt: Date;
   }): Promise<string>;
-  /** Atomically persist the batch, mark the run succeeded and set last_successful_sync_at = syncTo. */
+  /**
+   * Atomically: persist the batch, reconcile (if a reconciler is given) and store
+   * its rows, mark the run succeeded and set last_successful_sync_at = syncTo.
+   */
   commitSync(commit: {
     runId: string;
     providerAccountId: string;
     syncTo: Date;
     finishedAt: Date;
     batch: SyncBatch;
-  }): Promise<PersistCounts>;
-  failSyncRun(fail: { runId: string; finishedAt: Date; errorMessage: string }): Promise<void>;
+    reconcile?: Reconciler;
+  }): Promise<CommitResult>;
+  failSyncRun(fail: {
+    runId: string;
+    finishedAt: Date;
+    errorCategory: SyncErrorCategory;
+    errorMessage: string;
+  }): Promise<void>;
   /** Mark runs left "running" by a crash/shutdown as interrupted. */
   markInterruptedRuns(providerAccountId: string, at: Date): Promise<number>;
 }
+
+export type SyncErrorCategory = ProviderErrorCode | "database";
 
 export type SyncResult =
   | {
@@ -73,12 +114,14 @@ export type SyncResult =
       readonly syncFrom: Date | null;
       readonly syncTo: Date;
       readonly counts: PersistCounts;
+      readonly reconciliation: readonly ReconciliationRow[];
       readonly lastSuccessfulSyncAt: Date;
     }
   | {
       readonly ok: false;
       readonly runId: string | null;
       readonly mode: SyncMode;
+      readonly errorCategory: SyncErrorCategory;
       readonly errorMessage: string;
       readonly retryable: boolean;
       readonly isNetworkError: boolean;
@@ -90,14 +133,36 @@ export interface SyncServiceOptions {
   readonly store: SyncStore;
   readonly now?: () => Date;
   readonly overlapMs?: number;
+  readonly config?: AccountingConfig;
+}
+
+/** Default reconciler: holdings from history (no lot matching needed) vs. provider balances. */
+export function historyReconciler(config: AccountingConfig): Reconciler {
+  return ({ trades, transfers, balances }) => {
+    const flows = deriveAssetFlows(trades, transfers, config);
+    return reconcileBalances({
+      calculated: holdingsFromFlows(flows.acquisitions, flows.disposals),
+      reported: balances,
+      config,
+    }).rows;
+  };
+}
+
+class CommitError extends Error {
+  constructor(readonly original: unknown) {
+    super(original instanceof Error ? original.message : "Database commit failed");
+    this.name = "CommitError";
+  }
 }
 
 export class SyncService {
   private readonly inFlight = new Map<string, Promise<SyncResult>>();
   private readonly now: () => Date;
+  private readonly config: AccountingConfig;
 
   constructor(private readonly options: SyncServiceOptions) {
     this.now = options.now ?? (() => new Date());
+    this.config = options.config ?? createAccountingConfig("USD");
   }
 
   /**
@@ -111,6 +176,10 @@ export class SyncService {
     const run = this.runSync(provider, mode).finally(() => this.inFlight.delete(key));
     this.inFlight.set(key, run);
     return run;
+  }
+
+  isRunning(providerAccountId: string): boolean {
+    return this.inFlight.has(providerAccountId);
   }
 
   /** Startup: clean up crashed runs, then recovery-sync before data is considered current. */
@@ -157,36 +226,45 @@ export class SyncService {
         );
       }
 
-      const counts = await store.commitSync({
-        runId,
-        providerAccountId: accountId,
-        syncTo: window.until,
-        finishedAt: this.now(),
-        batch,
-      });
+      let committed: CommitResult;
+      try {
+        committed = await store.commitSync({
+          runId,
+          providerAccountId: accountId,
+          syncTo: window.until,
+          finishedAt: this.now(),
+          batch,
+          reconcile: cap.balances ? historyReconciler(this.config) : undefined,
+        });
+      } catch (error) {
+        throw new CommitError(error);
+      }
       return {
         ok: true,
         runId,
         mode,
         syncFrom: window.since,
         syncTo: window.until,
-        counts,
+        counts: committed.counts,
+        reconciliation: committed.reconciliation,
         lastSuccessfulSyncAt: window.until,
       };
     } catch (error) {
-      const errorMessage = safeErrorMessage(error);
+      const pe = error instanceof ProviderError ? error : null;
+      const errorCategory: SyncErrorCategory = pe ? pe.code : error instanceof CommitError ? "database" : "unknown";
+      const errorMessage = safeErrorMessage(error instanceof CommitError ? error.original : error);
       if (runId) {
         try {
-          await store.failSyncRun({ runId, finishedAt: this.now(), errorMessage });
+          await store.failSyncRun({ runId, finishedAt: this.now(), errorCategory, errorMessage });
         } catch {
           // Recording the failure must not mask the original error.
         }
       }
-      const pe = error instanceof ProviderError ? error : null;
       return {
         ok: false,
         runId,
         mode,
+        errorCategory,
         errorMessage,
         retryable: pe ? pe.retryable : true,
         isNetworkError: pe?.code === "network",

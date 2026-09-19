@@ -48,7 +48,25 @@ export interface NormalizedTrade extends NormalizedRecordBase {
   /** Asset the fee was charged in; null only when fee is zero. */
   readonly feeAsset: AssetCode | null;
   readonly executedAt: Date;
+  /**
+   * "exchange": an execution reported by the provider's trade history.
+   * "ledger": derived by the adapter from deterministically linked ledger
+   * records (e.g. instant buy/sell/convert). Default "exchange".
+   */
+  readonly origin?: TradeOrigin;
+  /** Where the fee figure comes from (diagnostics; the domain does not depend on it). */
+  readonly feeSource?: FeeSource;
 }
+
+export type TradeOrigin = "exchange" | "ledger";
+
+/**
+ * - ledger: as charged in the account ledger (actual balance change)
+ * - fee_credit: paid with a provider fee credit
+ * - trade_record: from the provider's trade record; ledger evidence unavailable
+ * - ledger_uncharged: the trade record reports a fee, but the ledger shows none charged
+ */
+export type FeeSource = "ledger" | "fee_credit" | "trade_record" | "ledger_uncharged";
 
 export type TransferDirection = "in" | "out";
 
@@ -97,7 +115,11 @@ export interface NormalizedLedgerEntry extends NormalizedRecordBase {
   readonly externalLedgerId: string;
   /** Provider reference linking related lines (e.g. both legs of a trade). */
   readonly externalReferenceId: string | null;
+  /** Normalized category. "other" means the activity is not supported and needs review. */
   readonly entryType: LedgerEntryType;
+  /** The provider's own labels, kept for display and debugging (e.g. "staking" / "spottostaking"). */
+  readonly providerEntryType: string;
+  readonly providerSubtype: string | null;
   readonly asset: AssetCode;
   /** Signed balance change, excluding fee. */
   readonly amount: Decimal;

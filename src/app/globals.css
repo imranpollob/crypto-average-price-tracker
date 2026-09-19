@@ -20,3 +20,35 @@ body {
 }
 .container { max-width: 960px; margin: 0 auto; padding: 32px 16px; }
 .status { color: var(--muted); }
+:root { --border: #d1d5db; --ok: #047857; --err: #b91c1c; --warn: #92400e; --card: #f9fafb; }
+@media (prefers-color-scheme: dark) {
+  :root { --border: #374151; --ok: #34d399; --err: #f87171; --warn: #fbbf24; --card: #111827; }
+}
+h1 { font-size: 1.5rem; margin: 0; }
+h2 { font-size: 1.1rem; margin-top: 0; }
+.row { display: flex; gap: 12px; align-items: center; justify-content: space-between; flex-wrap: wrap; margin-bottom: 16px; }
+.card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+.stack { display: flex; flex-direction: column; gap: 8px; max-width: 480px; }
+.inline { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+label { display: flex; flex-direction: column; gap: 4px; font-size: 0.9rem; }
+input { padding: 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--fg); font: inherit; }
+button { padding: 8px 14px; border-radius: 6px; border: 1px solid var(--border); background: var(--fg); color: var(--bg); cursor: pointer; font: inherit; }
+button:disabled { opacity: 0.6; cursor: progress; }
+.badge { padding: 4px 10px; border-radius: 999px; border: 1px solid var(--border); font-size: 0.85rem; }
+.state-synced { color: var(--ok); }
+.state-sync_failed, .state-offline { color: var(--err); }
+.state-balance_mismatch, .state-review_required, .state-syncing, .state-initial_sync { color: var(--warn); }
+.notice { display: block; padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border); }
+.notice.ok { color: var(--ok); }
+.notice.error, .error-text { color: var(--err); }
+.warning { color: var(--warn); }
+.muted { color: var(--muted); font-size: 0.9rem; }
+.grid { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; }
+dt { color: var(--muted); }
+dd { margin: 0; }
+.table-wrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; }
+th, td { padding: 6px 8px; border-bottom: 1px solid var(--border); text-align: left; }
+.num { text-align: right; }
+details { margin-top: 12px; }
+.report { white-space: pre-wrap; word-break: break-word; font-size: 0.8rem; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 12px; }

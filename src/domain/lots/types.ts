@@ -45,6 +45,13 @@ export interface Acquisition {
   /** Acquisition cost: gross = value of units received, fee = buy fee. */
   readonly cost: Valuation;
   readonly acquiredAt: Date;
+  /** Fee paid with a provider fee credit (zero portfolio cost), kept for transparency. */
+  readonly feeCredit?: FeeCreditUsage;
+}
+
+export interface FeeCreditUsage {
+  readonly amount: Decimal;
+  readonly asset: AssetCode;
 }
 
 /**
@@ -71,6 +78,8 @@ export interface Disposal {
   /** Sale proceeds: gross and sell fee (net = gross − fee). Null for transfer_out. */
   readonly proceeds: Valuation | null;
   readonly disposedAt: Date;
+  /** Fee paid with a provider fee credit (zero portfolio cost), kept for transparency. */
+  readonly feeCredit?: FeeCreditUsage;
 }
 
 /** A user decision: close `quantity` of `lotId` with `disposalId`. */

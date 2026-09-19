@@ -1,4 +1,5 @@
 import type {
+  AssetCode,
   AssetPair,
   NormalizedBalance,
   NormalizedLedgerEntry,
@@ -47,9 +48,12 @@ export type ProviderErrorCode =
   | "network"
   | "rate_limited"
   | "invalid_credentials"
+  /** e.g. API-key 2FA (OTP), which the MVP does not support */
+  | "unsupported_authentication"
   | "insufficient_permissions"
   | "excessive_permissions"
   | "invalid_response"
+  | "invalid_request"
   | "provider_unavailable"
   | "unknown";
 
@@ -116,13 +120,36 @@ export interface CredentialField {
 
 export type ProviderCredentials = Readonly<Record<string, string>>;
 
+/** What the user must configure at the provider, shown on the connection screen. */
+export interface ProviderSetupGuide {
+  readonly requiredPermissions: readonly string[];
+  /** Allowed, not needed yet. */
+  readonly optionalPermissions: readonly string[];
+  /** Keys with any of these are refused. */
+  readonly forbiddenPermissions: readonly string[];
+  /** Always-shown security caveat (e.g. permissions cannot be verified). */
+  readonly securityNote: string;
+}
+
 /** Registration entry for one provider implementation. */
 export interface ProviderDefinition {
   readonly type: ProviderType;
   readonly displayName: string;
   readonly kind: ProviderKind;
   readonly credentialFields: readonly CredentialField[];
+  readonly setup: ProviderSetupGuide;
+  /** Provider-internal fee-credit assets (not portfolio assets), canonical codes. */
+  readonly feeCreditAssets?: readonly AssetCode[];
+  /** Throws InvalidCredentialsInputError when the credentials are malformed. */
   createProvider(providerAccountId: string, credentials: ProviderCredentials): PortfolioProvider;
   createMarketData?(): MarketDataProvider;
   createLiveFeed?(providerAccountId: string, credentials: ProviderCredentials): LiveFeed;
+}
+
+/** Credentials that are syntactically unusable (checked before any network call). */
+export class InvalidCredentialsInputError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "InvalidCredentialsInputError";
+  }
 }

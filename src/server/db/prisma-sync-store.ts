@@ -1,12 +1,16 @@
 import type {
+  CommitResult,
   PersistCounts,
+  Reconciler,
   SyncBatch,
+  SyncErrorCategory,
   SyncMode,
   SyncStore,
 } from "@/application/sync/sync-service";
+import type { ReconciliationRow } from "@/domain/reconciliation/reconcile";
 import { dedupeBy } from "@/domain/transactions/identity";
 import type { Db } from "./client";
-import { balanceToRow, ledgerToRow, tradeToRow, transferToRow } from "./codec";
+import { balanceToRow, d2s, ledgerToRow, rowToTrade, rowToTransfer, tradeToRow, transferToRow } from "./codec";
 
 /** SQLite has a bound-parameter limit; look up existing keys in chunks. */
 const KEY_CHUNK = 500;
@@ -86,7 +90,29 @@ async function persistBatch(tx: Tx, accountId: string, batch: SyncBatch, runId: 
 
   const received = batch.trades.length + batch.transfers.length + batch.ledgerEntries.length;
   const inserted = trades.inserted + transfers.inserted + ledger.inserted;
-  return { received, inserted, duplicates: trades.duplicates + transfers.duplicates + ledger.duplicates };
+  return {
+    received,
+    inserted,
+    duplicates: trades.duplicates + transfers.duplicates + ledger.duplicates,
+    trades: { received: batch.trades.length, inserted: trades.inserted },
+    transfers: { received: batch.transfers.length, inserted: transfers.inserted },
+    ledgerEntries: { received: batch.ledgerEntries.length, inserted: ledger.inserted },
+    balances: batch.balances.length,
+  };
+}
+
+/** The account's complete stored history, read inside the commit transaction. */
+async function loadHistory(tx: Tx, accountId: string) {
+  const account = await tx.providerAccount.findUniqueOrThrow({
+    where: { id: accountId },
+    include: { provider: true },
+  });
+  const type = account.provider.type;
+  const [trades, transfers] = await Promise.all([
+    tx.trade.findMany({ where: { providerAccountId: accountId } }),
+    tx.transfer.findMany({ where: { providerAccountId: accountId } }),
+  ]);
+  return { trades: trades.map((r) => rowToTrade(r, type)), transfers: transfers.map((r) => rowToTransfer(r, type)) };
 }
 
 export class PrismaSyncStore implements SyncStore {
@@ -120,9 +146,30 @@ export class PrismaSyncStore implements SyncStore {
     syncTo: Date;
     finishedAt: Date;
     batch: SyncBatch;
-  }): Promise<PersistCounts> {
+    reconcile?: Reconciler;
+  }): Promise<CommitResult> {
     return this.db.$transaction(async (tx) => {
       const counts = await persistBatch(tx, commit.providerAccountId, commit.batch, commit.runId);
+
+      let reconciliation: readonly ReconciliationRow[] = [];
+      if (commit.reconcile) {
+        const history = await loadHistory(tx, commit.providerAccountId);
+        reconciliation = commit.reconcile({ ...history, balances: commit.batch.balances });
+        if (reconciliation.length > 0) {
+          await tx.reconciliationResult.createMany({
+            data: reconciliation.map((r) => ({
+              syncRunId: commit.runId,
+              providerAccountId: r.providerAccountId,
+              asset: r.asset,
+              calculated: d2s(r.calculated),
+              reported: d2s(r.reported),
+              difference: d2s(r.difference),
+              status: r.status,
+            })),
+          });
+        }
+      }
+
       await tx.syncRun.update({
         where: { id: commit.runId },
         data: {
@@ -130,6 +177,13 @@ export class PrismaSyncStore implements SyncStore {
           finishedAt: commit.finishedAt,
           recordsReceived: counts.received,
           recordsInserted: counts.inserted,
+          tradesReceived: counts.trades.received,
+          tradesInserted: counts.trades.inserted,
+          transfersReceived: counts.transfers.received,
+          transfersInserted: counts.transfers.inserted,
+          ledgerReceived: counts.ledgerEntries.received,
+          ledgerInserted: counts.ledgerEntries.inserted,
+          balancesRetrieved: counts.balances,
         },
       });
       // Advanced only here, inside the same transaction as the data it vouches for.
@@ -137,14 +191,24 @@ export class PrismaSyncStore implements SyncStore {
         where: { id: commit.providerAccountId },
         data: { lastSuccessfulSyncAt: commit.syncTo },
       });
-      return counts;
+      return { counts, reconciliation };
     });
   }
 
-  async failSyncRun(fail: { runId: string; finishedAt: Date; errorMessage: string }): Promise<void> {
+  async failSyncRun(fail: {
+    runId: string;
+    finishedAt: Date;
+    errorCategory: SyncErrorCategory;
+    errorMessage: string;
+  }): Promise<void> {
     await this.db.syncRun.update({
       where: { id: fail.runId },
-      data: { status: "failed", finishedAt: fail.finishedAt, errorMessage: fail.errorMessage },
+      data: {
+        status: "failed",
+        finishedAt: fail.finishedAt,
+        errorCategory: fail.errorCategory,
+        errorMessage: fail.errorMessage,
+      },
     });
   }
 

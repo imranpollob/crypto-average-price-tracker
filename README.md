@@ -2,7 +2,7 @@
 
 A local-first crypto portfolio tracker for lot-aware average cost, current value, and realized/unrealized P&L. Kraken first, with additional exchanges and wallets planned.
 
-> **Status: Phase 1 of 7 (foundation) is complete.** It includes the calculation engine, domain models, provider abstraction, database schema and sync orchestration, all covered by tests. The app **cannot connect to Kraken yet** (Phase 2), and the dashboard UI comes in Phase 5.
+> **Status: Phase 2.1 is complete (Kraken REST, hardened).** The app connects to Kraken with a verified read-only API key and imports the full trade and ledger history, including Instant Buy/Sell/Convert. It checks the result against Kraken's balances and shows a non-secret diagnostics report. The portfolio dashboard (lots, P/L) arrives in Phases 3–5.
 
 ---
 
@@ -51,7 +51,7 @@ If the same sale had closed the $20 lot instead, realized would be −$700 and u
 ## Architecture
 
 ```
-External sources         Kraken (Phase 2) · Coinbase, Binance, wallets (future)
+External sources         Kraken (REST) · Coinbase, Binance, wallets (future)
         │
         ▼
 Provider adapters        src/providers/<name>/         implement PortfolioProvider
@@ -70,7 +70,7 @@ Metrics                  src/domain/pnl, portfolio,    position metrics, portfol
                          reconciliation                balance reconciliation
         │
         ▼
-UI                       src/app/                      (Phase 5)
+UI                       src/app/                      connection + sync status (full dashboard: Phase 5)
 ```
 
 ```
@@ -88,10 +88,16 @@ src/
     sync/                sync window planning, sync status rules
   providers/           PortfolioProvider / MarketDataProvider / LiveFeed interfaces, registry,
                        in-memory test provider
+    kraken/              the only place Kraken formats exist: auth (signing, nonces), client
+                         (throttling, retries), rest (pagination), mapper (asset/pair names),
+                         normalizer, provider; testing/ holds a fake Kraken API for tests
   application/sync/    provider-agnostic SyncService + SyncStore port
   server/db/           Prisma client, codecs, SQLite SyncStore, history repository
+  server/credentials/  AES-256-GCM credential encryption
+  server/app/          provider-agnostic account service used by the UI
   app/                 Next.js app
 prisma/                schema and migrations
+docs/                  verified external API notes (kraken-api-notes.md)
 ```
 
 To add an exchange or wallet, write an adapter that implements `PortfolioProvider` (in [src/providers/types.ts](src/providers/types.ts)) and register it. The engine, database and UI do not change.
@@ -100,23 +106,23 @@ To add an exchange or wallet, write an adapter that implements `PortfolioProvide
 
 SQLite through Prisma 7 with the better-sqlite3 driver adapter. The main tables:
 
-`providers`, `provider_accounts`, `trades`, `transfers`, `ledger_entries`, `balance_snapshots`, `lots`, `lot_matches`, `manual_valuations`, `price_cache`, `sync_runs`.
+`providers`, `provider_accounts`, `trades`, `transfers`, `ledger_entries`, `balance_snapshots`, `reconciliation_results`, `lots`, `lot_matches`, `manual_valuations`, `price_cache`, `sync_runs`.
 
 - **Every amount is stored as TEXT** in canonical decimal form. SQLite's REAL and NUMERIC types keep only about 15 significant digits, which would silently corrupt crypto amounts.
 - Every imported row keeps the untouched provider payload in `raw_json`, so history can be reprocessed if parsing changes.
 - Imports are idempotent through `(provider_account_id, external_*_id)` unique keys.
 - `lots` is a projection rebuilt deterministically from history plus user decisions. Lot IDs are stable keys such as `trade:<account>:<txid>:base`, so the user's matches survive rebuilds.
-- `last_successful_sync_at` is advanced only inside the same transaction that commits the synced data.
+- `last_successful_sync_at` is advanced only inside the same transaction that commits the synced data and its balance reconciliation.
 
 ## How the calculations work
 
 - **Fees.** For a buy, cost = gross value + buy fee. For a sale, net proceeds = gross value − sell fee. A fee charged in the base asset changes the quantity received or sent instead. A fee charged in any other asset makes the value *unknown*; it is never ignored.
 - **Partial closes.** Cost, buy fee, proceeds and sell fee are allocated in proportion to the quantity closed, based on what remains. The final close takes the exact remainder. Division results are rounded to 36 decimal places, and all other operations are exact, so `allocated + remaining == original` holds with strict equality.
-- **Unmatched sales.** Realized P/L, cost basis, average cost and unrealized P/L show as *pending*. Holdings, current value and **total P/L** stay known, because the total does not depend on which lots were closed.
+- **Unmatched sales.** Realized P/L, cost basis, average cost and unrealized P/L show as *pending*. Holdings and current value stay known. **Total P/L** also stays known, because it does not depend on which lots were closed — but only if every acquisition cost, sale proceeds and fee is known and the history is complete. An unvalued fee, missing history, unsupported activity, an unresolved withdrawal or an unresolved balance mismatch makes it *incomplete* too, with the reason shown.
 - **Deposits** are not buys. They become lots with an *unknown* cost basis until you enter one. The market price at deposit time is never used as a cost.
 - **Withdrawals** are not sales. They produce no realized P/L and are flagged for review until you say which lots left the account. The cost basis of those lots leaves with them.
 - **Other currencies.** Only values in your reporting currency (default USD) count as known. A lot bought in EUR, or bought with BTC, has an unknown cost until you value it manually. No FX rate is guessed. A crypto/crypto trade affects both assets: buying ETH with BTC also disposes of BTC.
-- **Reconciliation** compares calculated holdings with the balances the exchange reports and shows the signed difference. History is never adjusted to make them match.
+- **Reconciliation** compares calculated holdings with the balances the exchange reports and shows the signed difference. History is never adjusted to make them match. An unresolved mismatch marks that asset's figures as incomplete.
 
 ## Local setup
 
@@ -127,31 +133,49 @@ npm install
 cp .env.example .env          # DATABASE_URL="file:./data/portfolio.db"
 npx prisma migrate deploy     # create the local SQLite database
 npx prisma generate           # generate the Prisma client (src/generated/prisma)
-npm test                      # run the test suite
+npm test                      # run the test suite (no network, no Kraken account needed)
 npm run dev                   # http://localhost:3000
 ```
 
+Then open the app, paste a read-only Kraken API key and private key, and press **Test connection and save**. After that, **Sync now** imports your history. The first sync of a large account can take several minutes, because the app stays within Kraken's rate limits.
+
 Other scripts: `npm run typecheck`, `npm run build`.
 
-## Kraken API permissions (Phase 2)
+## Kraken API permissions
 
-Create an API key with **query permissions only**:
+Create an API key in Kraken (Settings → API) with **query permissions only**:
 
-- ✅ Query Funds
-- ✅ Query Closed Orders & Trades
-- ✅ Query Ledger Entries
+- ✅ Funds → Query Funds
+- ✅ Orders & Trades → Query Closed Orders & Trades
+- ✅ Data → Query Ledger Entries
+- ➖ Optional: WebSocket → Access WebSockets API (used in a later version)
+- ❌ Deposit Funds, Withdraw Funds, Earn, adding/updating withdrawal addresses
 - ❌ Create & Modify Orders, Cancel/Close Orders
-- ❌ Deposit Funds, Withdraw Funds
-- ❌ Any other trading or funding permission
 
-The app never needs to trade or move funds. Do not give it a key that can.
+This application only needs read-only access.
+
+- The app checks the key's permissions with Kraken's `GetApiKeyInfo`.
+- **Keys with trading, funding, Earn or withdrawal-address permissions are refused** and never saved. The message says which permissions to remove.
+- Unneeded read-only permissions (Query Open Orders & Trades, Export Data) are accepted with a note.
+
+Also:
+
+- **API-key 2FA is not supported in this version.** Create a dedicated read-only API key without API-key 2FA.
+- Do not share the key with another app. Two apps using one key can cause nonce errors.
+
+See [docs/kraken-api-notes.md](docs/kraken-api-notes.md) for the verified API behaviour.
 
 ## Security
 
 This app handles financial data and exchange credentials.
 
 - It runs locally. There is no cloud service, no account and no telemetry. Your data stays in `./data/`, which is git-ignored.
-- Credentials are to be encrypted at rest (AES-256-GCM) with a key kept on this machine (Phase 2). They are never sent to the browser, never logged, and never sent anywhere except the exchange's own API.
+- Credentials are encrypted at rest with AES-256-GCM.
+  - The key comes from `APP_ENCRYPTION_KEY` (base64 of 32 random bytes), or else from `./data/master.key`, which is created on first use.
+  - Credentials never reach the browser. They are only ever sent to Kraken's own API, and only as a signature: the private key itself is never transmitted.
+  - They are validated with Kraken before being saved.
+  - Server-only modules are guarded, so they cannot be bundled into browser code.
+  - Keep `data/` private. The key file protects copies of the database, but not someone who can read both files.
 - Error messages are redacted before they are stored or logged.
 - Provider responses are validated. Malformed data fails the sync instead of being stored.
 
@@ -162,8 +186,8 @@ This app handles financial data and exchange credentials.
 | Phase | Scope | Status |
 |---|---|---|
 | 1 | Foundation: domain models, provider abstraction, decimal math, lot engine, P/L engine, schema, sync orchestration, tests | ✅ Done |
-| 2 | Kraken REST adapter, credentials, historical import, ledger, balances | ⏳ Next |
-| 3 | Lot workflow: persistence of lots and matches, manual matching | Planned |
+| 2 | Kraken REST adapter, credentials, historical import, ledger, balances, reconciliation | ✅ Done |
+| 3 | Lot workflow: persistence of lots and matches, manual matching | ⏳ Next |
 | 4 | Portfolio metrics service with live prices | Planned |
 | 5 | UI: overview, asset detail, lots, matching, review | Planned |
 | 6 | Reliable sync: startup recovery wiring, Sync Now, periodic reconciliation, offline handling | Planned |
@@ -172,7 +196,16 @@ This app handles financial data and exchange credentials.
 ## MVP limitations
 
 - Kraken is the only planned exchange for V1. Coinbase, other exchanges and on-chain wallets are designed for but not built.
-- Spot trading only. No margin, futures or advanced staking accounting. Rewards are imported as unknown-cost acquisitions.
+- Spot trading only. No margin, futures or advanced staking accounting.
+  - Rewards are imported as unknown-cost acquisitions.
+  - Margin trades are skipped, and their ledger lines are flagged for review.
+- Kraken Instant Buy / Sell / Convert: they appear only as ledger `spend` / `receive` lines.
+  - They become trades **only** when the two lines are linked unambiguously by Kraken's refid.
+  - Anything ambiguous stays flagged for review.
+  - A spread embedded in Kraken's price is not separated from the cost.
+- Kraken fee credits (KFEE) are not portfolio assets. A fee paid with KFEE costs nothing in P/L, because no asset or cash left the portfolio, and the usage is kept on the trade.
+- Rate limits: V1 always assumes Kraken's slowest tier (Starter). A large first sync can take several minutes.
+- One account per provider.
 - There are no automatic lot-selection methods (FIFO, LIFO, HIFO). Every sale is matched manually.
 - No FX conversion. Amounts in a non-reporting currency must be valued manually.
 - A lot can only be closed by a disposal on the same account. Matching transfers between accounts or wallets is future work.

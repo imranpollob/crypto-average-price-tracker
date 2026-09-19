@@ -5,7 +5,7 @@ import type { ProviderDefinition } from "./types";
  * Registry of available provider implementations. Adding an exchange or wallet
  * means writing an adapter and registering it here — nothing else changes.
  *
- * Phase 1: empty. Kraken is registered in Phase 2.
+ * The registry for this build is created by createDefaultRegistry() in ./index.ts.
  */
 export class ProviderRegistry {
   private readonly definitions = new Map<ProviderType, ProviderDefinition>();
@@ -32,5 +32,3 @@ export class ProviderRegistry {
     return [...this.definitions.values()];
   }
 }
-
-export const providerRegistry = new ProviderRegistry();

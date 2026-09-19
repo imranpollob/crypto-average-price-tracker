@@ -1,11 +1,12 @@
 import type {
   NormalizedBalance,
+  NormalizedLedgerEntry,
   NormalizedTrade,
   NormalizedTransfer,
 } from "@/domain/transactions/types";
 import type { ProviderKind } from "@/providers/types";
 import type { Db } from "./client";
-import { rowToBalance, rowToTrade, rowToTransfer } from "./codec";
+import { rowToBalance, rowToLedger, rowToTrade, rowToTransfer } from "./codec";
 
 /** Provider/account bookkeeping and read access to normalized history. */
 export class HistoryRepository {
@@ -46,6 +47,15 @@ export class HistoryRepository {
       orderBy: [{ occurredAt: "asc" }, { externalTransferId: "asc" }],
     });
     return rows.map((r) => rowToTransfer(r, r.providerAccount.provider.type));
+  }
+
+  async loadLedgerEntries(providerAccountId?: string): Promise<NormalizedLedgerEntry[]> {
+    const rows = await this.db.ledgerEntry.findMany({
+      where: providerAccountId ? { providerAccountId } : {},
+      include: { providerAccount: { include: { provider: true } } },
+      orderBy: [{ occurredAt: "asc" }, { externalLedgerId: "asc" }],
+    });
+    return rows.map((r) => rowToLedger(r, r.providerAccount.provider.type));
   }
 
   /** Balances captured by the latest successful sync of the account. */
