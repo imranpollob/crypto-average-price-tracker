@@ -115,7 +115,9 @@ export function feeFromLedger(
   return assetsSeen.has(pair.base) && assetsSeen.has(pair.quote) ? { kind: "none" } : { kind: "inconclusive" };
 }
 
-export type SkippedTrade = { readonly txid: string; readonly reason: "margin" };
+export type SkippedTrade =
+  | { readonly txid: string; readonly reason: "margin" }
+  | { readonly txid: string; readonly reason: "unsupported_pair"; readonly pair: string; readonly row: KrakenTradeRow };
 
 export interface NormalizeContext {
   readonly mapper: KrakenAssetMapper;
@@ -146,7 +148,17 @@ export function normalizeTrades(
 
     const side = row.type;
     if (side !== "buy" && side !== "sell") throw invalid(`trade side (${txid})`);
-    const pair = params.mapper.resolvePair(stringField(row.pair, `trade pair (${txid})`));
+    const rawPair = stringField(row.pair, `trade pair (${txid})`);
+    let pair: ReturnType<KrakenAssetMapper["resolvePair"]>;
+    try {
+      pair = params.mapper.resolvePair(rawPair);
+    } catch (e) {
+      if (!(e instanceof ProviderError)) throw e;
+      // One unparseable historical market must not abort the rest of the sync:
+      // the raw trade is preserved for review instead of being dropped or guessed at.
+      skipped.push({ txid, reason: "unsupported_pair", pair: rawPair, row });
+      continue;
+    }
     const quantity = decimalField(row.vol, `trade volume (${txid})`);
     const price = decimalField(row.price, `trade price (${txid})`);
     const grossValue = decimalField(row.cost, `trade cost (${txid})`);
@@ -206,6 +218,7 @@ export function normalizeTrades(
       rawData: {
         txid,
         trade: row,
+        pairMappingSource: pair.mappingSource,
         feeLedgerIds,
         ...(feeCredit ? { feeCreditUsed: { amount: feeCredit.amount.toFixed(), asset: feeCredit.asset, ledgerIds: feeCredit.ledgerIds } } : {}),
         ...(feeSource === "ledger_uncharged" ? { reportedFeeNotCharged: row.fee } : {}),
@@ -408,8 +421,22 @@ export function classifyLedger(type: string, subtype: string, amount: Decimal): 
     case "adjustment":
     case "credit":
       return amount.isZero() ? { entryType: "adjustment", movement: "none" } : { entryType: "adjustment", movement: "transfer", kind: "adjustment" };
+    case "spend":
+    case "receive":
+      // Genuine Instant Buy/Sell spend/receive pairs are already consumed by
+      // linkInstantTrades before classifyLedger ever sees them (see
+      // linkedLedgerIds in normalizeLedger). What reaches here is a lone
+      // line with no counterpart. Kraken's automatic "dustsweeping" is one
+      // such case: it removes a de-minimis balance with no matching receive
+      // line. It is a provider-side balance adjustment, not a trade — no
+      // proceeds or price is ever reported for it, so it must not be
+      // guessed at. Handled generically by subtype, for any asset.
+      if (sub === "dustsweeping") {
+        return amount.isZero() ? { entryType: "adjustment", movement: "none" } : { entryType: "adjustment", movement: "transfer", kind: "adjustment" };
+      }
+      return { entryType: "other", movement: "none" };
     default:
-      // margin, rollover, spend, receive, settled, sale, conversion, nft*, custodytransfer, none, unknown…
+      // margin, rollover, settled, sale, conversion, nft*, custodytransfer, none, unknown…
       return { entryType: "other", movement: "none" };
   }
 }

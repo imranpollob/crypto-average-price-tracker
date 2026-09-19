@@ -1,4 +1,5 @@
 import { type AccountingConfig, createAccountingConfig } from "@/domain/accounting/config";
+import type { Decimal } from "@/domain/decimal";
 import { deriveAssetFlows } from "@/domain/lots/flows";
 import {
   holdingsFromFlows,
@@ -6,8 +7,10 @@ import {
   type ReconciliationRow,
 } from "@/domain/reconciliation/reconcile";
 import { planSyncWindow } from "@/domain/sync/window";
+import { ledgerDataQualityFlags } from "@/domain/transactions/ledger-quality";
 import { validateBatch } from "@/domain/transactions/validate";
 import type {
+  AssetCode,
   NormalizedBalance,
   NormalizedLedgerEntry,
   NormalizedTrade,
@@ -64,6 +67,7 @@ export interface PersistCounts {
 export type Reconciler = (input: {
   readonly trades: readonly NormalizedTrade[];
   readonly transfers: readonly NormalizedTransfer[];
+  readonly ledgerEntries: readonly NormalizedLedgerEntry[];
   readonly balances: readonly NormalizedBalance[];
 }) => readonly ReconciliationRow[];
 
@@ -137,13 +141,26 @@ export interface SyncServiceOptions {
 }
 
 /** Default reconciler: holdings from history (no lot matching needed) vs. provider balances. */
-export function historyReconciler(config: AccountingConfig): Reconciler {
-  return ({ trades, transfers, balances }) => {
+export function historyReconciler(
+  config: AccountingConfig,
+  precisionByAsset?: ReadonlyMap<AssetCode, { readonly tolerance: Decimal; readonly precision: number }>,
+): Reconciler {
+  const tolerance = precisionByAsset && new Map([...precisionByAsset].map(([asset, p]) => [asset, p.tolerance]));
+  const precision = precisionByAsset && new Map([...precisionByAsset].map(([asset, p]) => [asset, p.precision]));
+  return ({ trades, transfers, ledgerEntries, balances }) => {
     const flows = deriveAssetFlows(trades, transfers, config);
+    // Ledger activity the adapter could not normalize into a trade/transfer
+    // (see ledgerDataQualityFlags) already gives a specific reason to review
+    // that asset, so a non-negligible mismatch there is "review_required"
+    // rather than a bare, unexplained "mismatch".
+    const reviewRequiredAssets = new Set(ledgerDataQualityFlags(ledgerEntries, config).map((f) => f.asset));
     return reconcileBalances({
       calculated: holdingsFromFlows(flows.acquisitions, flows.disposals),
       reported: balances,
       config,
+      tolerance,
+      precision,
+      reviewRequiredAssets,
     }).rows;
   };
 }
@@ -226,6 +243,7 @@ export class SyncService {
         );
       }
 
+      const precisionByAsset = cap.balances && provider.getReconciliationTolerance ? await provider.getReconciliationTolerance() : undefined;
       let committed: CommitResult;
       try {
         committed = await store.commitSync({
@@ -234,7 +252,7 @@ export class SyncService {
           syncTo: window.until,
           finishedAt: this.now(),
           batch,
-          reconcile: cap.balances ? historyReconciler(this.config) : undefined,
+          reconcile: cap.balances ? historyReconciler(this.config, precisionByAsset) : undefined,
         });
       } catch (error) {
         throw new CommitError(error);

@@ -89,7 +89,11 @@ The endpoint reference names *Query closed orders & trades*. The permissions ove
 
 - `Assets` maps each Kraken asset id to its `altname`, for example `XXBT` → `XBT` and `ZUSD` → `USD`.
 - `AssetPairs` maps each pair key to `base` / `quote` asset ids, for example `XXBTZUSD` → (`XXBT`, `ZUSD`) and `XETHXXBT` → (`XETH`, `XXBT`). It also gives `altname` and `wsname`.
-- Only currently listed pairs are returned. Delisted pairs are resolved by an unambiguous split into two known asset ids, or the sync fails with an explicit error.
+- Only currently listed pairs are returned. A pair missing from the live response (delisted, or a historical trade whose pair predates its current listing) is resolved deterministically, in order:
+  1. an unambiguous split into two currently-known asset ids (`uniqueSplit`);
+  2. a split on the **longest known quote-asset suffix** (`quoteSuffixSplit`) — the base need not itself be a known asset id, e.g. historical pair `AAPLZUSD` → base `AAPL`, quote `ZUSD` → `USD`, even though `AAPL` never appears in `Assets`.
+  - Both are marked `mappingSource: "historical_fallback"` on the resolved pair (vs. `"asset_pairs"` for a live listing), which is recorded in the trade's `rawData.pairMappingSource`.
+  - If neither succeeds, the pair is genuinely unparseable or ambiguous: that one trade is excluded and recorded in `skipped` as `{ reason: "unsupported_pair", pair, row }` (the raw row is preserved), and the rest of the account's history still syncs — one bad historical market never aborts the whole sync.
 
 ## Pagination strategy
 
@@ -197,6 +201,7 @@ The app verifies the key's permissions with `GetApiKeyInfo` and refuses keys tha
 - Assets named plainly (`ADA`, `DOT`, `USDT`, `USDC`) map to themselves. There is no prefix stripping, because `XTZ` is Tezos, not "X"+"TZ".
 - Balance-bucket suffixes `.S`, `.M`, `.B`, `.F` are the same economic asset held in a staking or earn product, so `ADA.S` → ADA. Legacy `ETH2` / `ETH2.S` → ETH.
 - `.T` (tokenized assets) is **not** stripped.
+- xStocks (Kraken's tokenized equities/ETFs, e.g. Apple as `AAPLx`) are Kraken's only stock-like product — it has never offered traditional equity trading. The live ticker's trailing `x` is uppercased by the API (`AAPLX`). A small explicit table (`XSTOCK_LEGACY_BASE_IDS`, confirmed against https://www.kraken.com/xstocks) maps a historical bare ticker (e.g. `AAPL`, as seen in an old pair like `AAPLZUSD`) to its current `X`-suffixed canonical code. Nothing is inferred for stock-like tickers outside that table — no blanket "append X" rule.
 - Provider balances are summed per canonical asset, and the components are kept in `raw_json`.
 
 ## Ledger → normalized activity

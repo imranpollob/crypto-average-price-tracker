@@ -1,4 +1,6 @@
+import { Decimal } from "@/domain/decimal";
 import type {
+  AssetCode,
   NormalizedBalance,
   NormalizedLedgerEntry,
   NormalizedTrade,
@@ -109,6 +111,14 @@ export class KrakenProvider implements PortfolioProvider {
     const mapper = await this.assetMapper();
     const result = await fetchBalance(this.client);
     return normalizeBalances({ result, mapper, providerAccountId: this.providerAccountId, asOf: this.now() });
+  }
+
+  /** Smallest representable unit per canonical asset, per Kraken's own Assets metadata. */
+  async getReconciliationTolerance(): Promise<ReadonlyMap<AssetCode, { readonly tolerance: Decimal; readonly precision: number }>> {
+    const mapper = await this.assetMapper();
+    return new Map(
+      [...mapper.assetPrecision()].map(([asset, decimals]) => [asset, { tolerance: new Decimal(10).pow(-decimals), precision: decimals }]),
+    );
   }
 
   private assetMapper(): Promise<KrakenAssetMapper> {

@@ -1,3 +1,4 @@
+import type { Decimal } from "@/domain/decimal";
 import type {
   AssetCode,
   AssetPair,
@@ -89,6 +90,13 @@ export interface PortfolioProvider {
   syncTransfers(params: SyncParams): Promise<NormalizedTransfer[]>;
   /** Current provider-reported balances. */
   getBalances(): Promise<NormalizedBalance[]>;
+  /**
+   * Optional: absolute per-asset reconciliation tolerance derived from the
+   * provider's own smallest representable unit (e.g. decimal precision),
+   * used to classify a negligible reconciliation difference instead of an
+   * arbitrary global tolerance. Omitted entirely if unsupported.
+   */
+  getReconciliationTolerance?(): Promise<ReadonlyMap<AssetCode, { readonly tolerance: Decimal; readonly precision: number }>>;
 }
 
 /** Market-data source. May be the same object as a PortfolioProvider (e.g. Kraken). */

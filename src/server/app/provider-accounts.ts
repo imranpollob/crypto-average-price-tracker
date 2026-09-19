@@ -151,7 +151,7 @@ export async function syncProvider(providerType: string): Promise<SyncSummary> {
     return { ok: false, message: safeErrorMessage(error) };
   }
   if (!result.ok) return { ok: false, message: result.errorMessage };
-  const mismatches = result.reconciliation.filter((r) => r.status === "mismatch").length;
+  const mismatches = result.reconciliation.filter((r) => r.status === "mismatch" || r.status === "review_required").length;
   return {
     ok: true,
     message:
@@ -244,7 +244,7 @@ export async function getProviderStatus(providerType: string): Promise<ProviderS
     appStartedAt: startedAt,
     lastRunFailed: lastRun?.status === "failed",
     lastFailureWasNetwork: lastRun?.errorCategory === "network",
-    balanceMismatch: reconciliation.some((r) => r.status === "mismatch"),
+    balanceMismatch: reconciliation.some((r) => r.status === "mismatch" || r.status === "review_required"),
     reviewRequired: review.length > 0,
   });
 

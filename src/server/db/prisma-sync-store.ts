@@ -10,7 +10,7 @@ import type {
 import type { ReconciliationRow } from "@/domain/reconciliation/reconcile";
 import { dedupeBy } from "@/domain/transactions/identity";
 import type { Db } from "./client";
-import { balanceToRow, d2s, ledgerToRow, rowToTrade, rowToTransfer, tradeToRow, transferToRow } from "./codec";
+import { balanceToRow, d2s, ledgerToRow, rowToLedger, rowToTrade, rowToTransfer, tradeToRow, transferToRow } from "./codec";
 
 /** SQLite has a bound-parameter limit; look up existing keys in chunks. */
 const KEY_CHUNK = 500;
@@ -108,11 +108,16 @@ async function loadHistory(tx: Tx, accountId: string) {
     include: { provider: true },
   });
   const type = account.provider.type;
-  const [trades, transfers] = await Promise.all([
+  const [trades, transfers, ledgerEntries] = await Promise.all([
     tx.trade.findMany({ where: { providerAccountId: accountId } }),
     tx.transfer.findMany({ where: { providerAccountId: accountId } }),
+    tx.ledgerEntry.findMany({ where: { providerAccountId: accountId } }),
   ]);
-  return { trades: trades.map((r) => rowToTrade(r, type)), transfers: transfers.map((r) => rowToTransfer(r, type)) };
+  return {
+    trades: trades.map((r) => rowToTrade(r, type)),
+    transfers: transfers.map((r) => rowToTransfer(r, type)),
+    ledgerEntries: ledgerEntries.map((r) => rowToLedger(r, type)),
+  };
 }
 
 export class PrismaSyncStore implements SyncStore {

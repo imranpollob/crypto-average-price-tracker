@@ -14,16 +14,18 @@ export interface CalculatedHolding {
   readonly quantity: Decimal;
 }
 
-export type ReconciliationStatus = "reconciled" | "mismatch";
+export type ReconciliationStatus = "reconciled" | "reconciled_within_precision" | "mismatch" | "review_required";
 
 export interface ReconciliationRow {
   readonly providerAccountId: string;
   readonly asset: AssetCode;
   readonly calculated: Decimal;
   readonly reported: Decimal;
-  /** reported − calculated: positive means the provider shows more than history explains. */
+  /** reported − calculated: positive means the provider shows more than history explains. Never rounded away, even when status is "reconciled_within_precision". */
   readonly difference: Decimal;
   readonly status: ReconciliationStatus;
+  /** Provider decimal precision used for the tolerance check, or null if unknown. */
+  readonly precision: number | null;
 }
 
 export interface ReconciliationReport {
@@ -66,16 +68,21 @@ export function holdingsByAccount(engine: LotEngineResult): CalculatedHolding[] 
 }
 
 /**
- * An unresolved mismatch means history does not explain the provider balance,
- * so every figure for that asset is unreliable until it is investigated.
+ * An unresolved mismatch (or a mismatch already tied to known unsupported
+ * activity) means history does not explain the provider balance, so every
+ * figure for that asset is unreliable until it is investigated. A difference
+ * within the provider's own reporting precision is not included: it is not
+ * material.
  */
 export function reconciliationFlags(report: ReconciliationReport): DataQualityFlag[] {
-  return report.mismatches.map((r) => ({
-    asset: r.asset,
-    reason: "reconciliation_mismatch" as const,
-    detail: `Calculated ${r.calculated.toFixed()} vs. provider ${r.reported.toFixed()} (difference ${r.difference.toFixed()})`,
-    sourceKey: null,
-  }));
+  return report.mismatches
+    .filter((r) => r.status === "mismatch" || r.status === "review_required")
+    .map((r) => ({
+      asset: r.asset,
+      reason: "reconciliation_mismatch" as const,
+      detail: `Calculated ${r.calculated.toFixed()} vs. provider ${r.reported.toFixed()} (difference ${r.difference.toFixed()})`,
+      sourceKey: null,
+    }));
 }
 
 export function reconcileBalances(params: {
@@ -84,6 +91,15 @@ export function reconcileBalances(params: {
   readonly config: AccountingConfig;
   /** Absolute per-asset tolerance for provider dust rounding. Default: exact. */
   readonly tolerance?: ReadonlyMap<AssetCode, Decimal>;
+  /** Decimal precision behind each tolerance entry, kept only for display/diagnostics. */
+  readonly precision?: ReadonlyMap<AssetCode, number>;
+  /**
+   * Assets with known unsupported/unresolved ledger activity (see
+   * ledgerDataQualityFlags). A non-negligible difference on one of these is
+   * classified "review_required" instead of a bare "mismatch": there is
+   * already a specific, actionable reason to look at that asset.
+   */
+  readonly reviewRequiredAssets?: ReadonlySet<AssetCode>;
 }): ReconciliationReport {
   const rows = new Map<string, { account: string; asset: AssetCode; calc: Decimal; rep: Decimal }>();
   const row = (account: string, asset: AssetCode) => {
@@ -111,17 +127,24 @@ export function reconcileBalances(params: {
   for (const r of rows.values()) {
     if (r.calc.isZero() && r.rep.isZero()) continue;
     const difference = r.rep.minus(r.calc);
+    const diffAbs = difference.abs();
     const tol = params.tolerance?.get(r.asset) ?? ZERO;
+    let status: ReconciliationStatus;
+    if (diffAbs.isZero()) status = "reconciled";
+    else if (diffAbs.lessThanOrEqualTo(tol)) status = "reconciled_within_precision";
+    else if (params.reviewRequiredAssets?.has(r.asset)) status = "review_required";
+    else status = "mismatch";
     result.push({
       providerAccountId: r.account,
       asset: r.asset,
       calculated: r.calc,
       reported: r.rep,
       difference,
-      status: difference.abs().lessThanOrEqualTo(tol) ? "reconciled" : "mismatch",
+      status,
+      precision: params.precision?.get(r.asset) ?? null,
     });
   }
   result.sort((a, b) => a.asset.localeCompare(b.asset) || a.providerAccountId.localeCompare(b.providerAccountId));
-  const mismatches = result.filter((r) => r.status === "mismatch");
+  const mismatches = result.filter((r) => r.status === "mismatch" || r.status === "review_required");
   return { rows: result, mismatches, reconciled: mismatches.length === 0 };
 }
