@@ -1,195 +1,182 @@
-import { getProviderDiagnostics, getProviderStatus, type ProviderStatus } from "@/server/app/provider-accounts";
-import { ConnectKrakenForm, SyncNowButton } from "./kraken-forms";
+import Link from "next/link";
+import { Fragment } from "react";
+import { getDashboard } from "@/server/app/portfolio";
+import type { PositionView, Total } from "@/server/app/portfolio-service";
+import { money, price } from "./format";
+import { MetricCell } from "./metric-cell";
+import { PositionLabels } from "./position-labels";
+import { StatusBar } from "./status-bar";
 
 export const dynamic = "force-dynamic";
 
-const STATE_LABEL: Record<ProviderStatus["state"], string> = {
-  not_connected: "Not connected",
-  initial_sync: "Initial sync",
-  syncing: "Syncing",
-  synced: "Synced",
-  offline: "Offline",
-  sync_failed: "Sync failed",
-  balance_mismatch: "Balance mismatch",
-  review_required: "Review required",
-};
-
-function when(iso: string | null): string {
-  return iso ? new Date(iso).toLocaleString() : "—";
-}
-
-export default async function HomePage() {
-  const s = await getProviderStatus("kraken");
-  const diag = s.lastSuccessfulSyncAt ? await getProviderDiagnostics("kraken") : null;
+function TotalRow({ label, total, signed = false, what }: { label: string; total: Total; signed?: boolean; what: string }) {
   return (
-    <main className="container">
-      <header className="row">
-        <h1>Crypto Average Price Tracker</h1>
-        <span className={`badge state-${s.state}`}>{STATE_LABEL[s.state]}</span>
-      </header>
-
-      {s.connected && !s.isCurrent && (
-        <p className="notice warning" role="status">
-          {s.state === "sync_failed" || s.state === "offline"
-            ? `${s.providerName} synchronization failed. `
-            : "Not yet synchronized in this session. "}
-          Showing data as of: <strong>{when(s.lastSuccessfulSyncAt)}</strong>
-        </p>
-      )}
-
-      <section className="card">
-        <h2>{s.providerName}</h2>
-        {s.connected && s.hasCredentials ? (
-          <>
-            <p>
-              Last successful sync: <strong>{when(s.lastSuccessfulSyncAt)}</strong>
-            </p>
-            <SyncNowButton label={s.lastRun?.status === "failed" ? "Retry" : "Sync now"} />
-            <details>
-              <summary>Replace API credentials</summary>
-              <ConnectKrakenForm submitLabel="Test and save" />
-            </details>
-          </>
-        ) : (
-          <>
-            <Permissions setup={s.setup} />
-            <ConnectKrakenForm submitLabel="Test connection and save" />
-          </>
+    <>
+      <dt>{label}</dt>
+      <dd>
+        <MetricCell m={{ status: "known", value: total.value }} signed={signed} />
+        {total.excluded.length > 0 && (
+          <span className="warning" title={total.excluded.join(", ")}>
+            {" "}
+            * excludes {total.excluded.length} asset{total.excluded.length === 1 ? "" : "s"} ({what})
+          </span>
         )}
-        <p className="warning">⚠ {s.setup.securityNote}</p>
-      </section>
-
-      {s.lastRun && (
-        <section className="card">
-          <h2>Last sync run</h2>
-          <dl className="grid">
-            <dt>Status</dt>
-            <dd>
-              {s.lastRun.status} ({s.lastRun.mode})
-            </dd>
-            <dt>Range</dt>
-            <dd>
-              {s.lastRun.syncFrom ? when(s.lastRun.syncFrom) : "full history"} → {when(s.lastRun.syncTo)}
-            </dd>
-            <dt>Trades</dt>
-            <dd>
-              {s.lastRun.trades.received} received, {s.lastRun.trades.inserted} new
-            </dd>
-            <dt>Ledger entries</dt>
-            <dd>
-              {s.lastRun.ledger.received} received, {s.lastRun.ledger.inserted} new
-            </dd>
-            <dt>Transfers</dt>
-            <dd>
-              {s.lastRun.transfers.received} received, {s.lastRun.transfers.inserted} new
-            </dd>
-            <dt>Balances</dt>
-            <dd>{s.lastRun.balancesRetrieved} retrieved</dd>
-            {s.lastRun.errorMessage && (
-              <>
-                <dt>Error</dt>
-                <dd className="error-text">
-                  [{s.lastRun.errorCategory}] {s.lastRun.errorMessage}
-                </dd>
-              </>
-            )}
-          </dl>
-          <p className="muted">
-            Stored: {s.totals.trades} trades · {s.totals.ledgerEntries} ledger entries · {s.totals.transfers} transfers
-          </p>
-        </section>
-      )}
-
-      {s.reconciliation.length > 0 && (
-        <section className="card">
-          <h2>Balance reconciliation</h2>
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Asset</th>
-                  <th className="num">Calculated</th>
-                  <th className="num">{s.providerName}</th>
-                  <th className="num">Difference</th>
-                  <th>Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {s.reconciliation.map((r) => (
-                  <tr key={r.asset}>
-                    <td>{r.asset}</td>
-                    <td className="num">{r.calculated}</td>
-                    <td className="num">{r.reported}</td>
-                    <td className="num">{r.difference === "0" ? "0" : r.difference.startsWith("-") ? r.difference : `+${r.difference}`}</td>
-                    <td>{r.status === "reconciled" ? "✓ Reconciled" : "⚠ Mismatch"}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <p className="muted">Differences are shown, never corrected by editing history.</p>
-        </section>
-      )}
-
-      {s.review.length > 0 && (
-        <section className="card">
-          <h2>Needs review ({s.review.length})</h2>
-          <ul>
-            {s.review.map((r, i) => (
-              <li key={i}>
-                <strong>{r.asset}</strong>: {r.detail}
-              </li>
-            ))}
-          </ul>
-        </section>
-      )}
-      {diag && (
-        <section className="card">
-          <h2>Sync diagnostics</h2>
-          <dl className="grid">
-            <dt>Trades</dt>
-            <dd>
-              {diag.diagnostics.records.exchangeTrades} exchange · {diag.diagnostics.records.ledgerDerivedTrades} instant buy/sell/convert
-            </dd>
-            <dt>Ledger entries</dt>
-            <dd>{diag.diagnostics.records.ledgerEntries}</dd>
-            <dt>History span</dt>
-            <dd>
-              {when(diag.diagnostics.earliestTransaction)} → {when(diag.diagnostics.latestTransaction)}
-            </dd>
-            <dt>Fees</dt>
-            <dd>
-              {diag.diagnostics.fees.normal} normal · {diag.diagnostics.fees.thirdAsset} third-asset · {diag.diagnostics.fees.feeCredit} fee credits · {diag.diagnostics.fees.fromTradeRecord} without ledger evidence
-            </dd>
-            <dt>Review required</dt>
-            <dd>{diag.diagnostics.review.total}</dd>
-          </dl>
-          <details>
-            <summary>Copyable report (contains no keys or secrets)</summary>
-            <pre className="report">{diag.text}</pre>
-          </details>
-        </section>
-      )}
-    </main>
+      </dd>
+    </>
   );
 }
 
-function Permissions({ setup }: { setup: ProviderStatus["setup"] }) {
+function PriceCell({ p }: { p: PositionView }) {
+  if (p.price === null) return <span className="warning">unavailable</span>;
   return (
-    <div className="stack">
-      <p>
-        Create an API key with <strong>read-only</strong> permissions only:
-      </p>
-      <ul>
-        {setup.requiredPermissions.map((p) => (
-          <li key={p}>{p}</li>
-        ))}
-      </ul>
-      {setup.optionalPermissions.length > 0 && <p className="muted">Optional: {setup.optionalPermissions.join(", ")}.</p>}
-      <p>
-        Do <strong>not</strong> enable: {setup.forbiddenPermissions.join(", ")}. Keys with any of these are refused.
-        The key is encrypted and stored only on this computer.
-      </p>
-    </div>
+    <span title={`as of ${new Date(p.priceAsOf!).toLocaleString()}`} className={p.priceStale ? "stale" : undefined}>
+      {price(p.price, "USD")}
+      {p.priceStale && " (stale)"}
+    </span>
+  );
+}
+
+export default async function PortfolioPage() {
+  const { status, portfolio } = await getDashboard();
+  const t = portfolio?.totals;
+  return (
+    <main className="container wide">
+      <header className="row">
+        <h1>Portfolio</h1>
+      </header>
+      <StatusBar status={status} />
+
+      {portfolio && t && (
+        <>
+          <section className="card">
+            <dl className="grid totals">
+              <TotalRow label="Total current value" total={t.currentValue} what="no current price" />
+              <TotalRow label="Open cost basis" total={t.costBasis} what="cost basis incomplete" />
+              <TotalRow label="Realized P/L" total={t.realizedPnl} signed what="P/L incomplete" />
+              <TotalRow label="Unrealized P/L" total={t.unrealizedPnl} signed what="P/L incomplete" />
+              <TotalRow label="Total P/L" total={t.totalPnl} signed what="P/L incomplete" />
+              {portfolio.cash.map((c) => (
+                <Fragment key={c.asset}>
+                  <dt>Cash ({c.asset})</dt>
+                  <dd>{c.asset === "USD" ? money(c.total) : `${c.total} ${c.asset}`}</dd>
+                </Fragment>
+              ))}
+            </dl>
+            {portfolio.fifoEstimatedAssets > 0 && (
+              <p className="muted">
+                Includes provisional FIFO matches for {portfolio.fifoEstimatedAssets} asset{portfolio.fifoEstimatedAssets === 1 ? "" : "s"}:
+                sales and transfers you have not assigned to specific lots are estimated oldest-lot-first. This is a calculation
+                fallback, not an assumption about your strategy — <Link href="/lots">assign lots</Link> to replace it.
+              </p>
+            )}
+            {(t.totalPnl.excluded.length > 0 || t.currentValue.excluded.length > 0) && (
+              <p className="muted">* Totals add only figures that are complete. Hover an “Incomplete” cell to see why.</p>
+            )}
+          </section>
+
+          <section className="card">
+            <h2>Holdings ({portfolio.positions.length})</h2>
+            {portfolio.positions.length === 0 ? (
+              <p className="muted">No open positions.</p>
+            ) : (
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Asset</th>
+                      <th className="num">Price</th>
+                      <th className="num">Holdings</th>
+                      <th className="num">Current value</th>
+                      <th className="num">Avg cost</th>
+                      <th className="num">Cost basis</th>
+                      <th className="num">Realized</th>
+                      <th className="num">Unrealized</th>
+                      <th className="num">%</th>
+                      <th className="num">Total P/L</th>
+                      <th>Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {portfolio.positions.map((p) => (
+                      <tr key={p.asset}>
+                        <td>
+                          <Link href={`/assets/${encodeURIComponent(p.asset)}`}>{p.asset}</Link>
+                        </td>
+                        <td className="num">
+                          <PriceCell p={p} />
+                        </td>
+                        <td className="num">{p.holdings}</td>
+                        <td className="num">
+                          <MetricCell m={p.currentValue} />
+                        </td>
+                        <td className="num">
+                          <MetricCell m={p.averageCost} as="price" />
+                        </td>
+                        <td className="num">
+                          <MetricCell m={p.costBasis} />
+                        </td>
+                        <td className="num">
+                          <MetricCell m={p.realizedPnl} signed />
+                        </td>
+                        <td className="num">
+                          <MetricCell m={p.unrealizedPnl} signed />
+                        </td>
+                        <td className="num">
+                          <MetricCell m={p.unrealizedPnlPercent} as="percent" />
+                        </td>
+                        <td className="num">
+                          <MetricCell m={p.totalPnl} signed />
+                        </td>
+                        <td>
+                          <PositionLabels labels={p.labels} />
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+
+          {portfolio.closed.length > 0 && (
+            <section className="card">
+              <details>
+                <summary>Closed positions ({portfolio.closed.length}) — realized P/L only</summary>
+                <div className="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Asset</th>
+                        <th className="num">Realized P/L</th>
+                        <th className="num">Total P/L</th>
+                        <th>Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {portfolio.closed.map((p) => (
+                        <tr key={p.asset}>
+                          <td>
+                            <Link href={`/assets/${encodeURIComponent(p.asset)}`}>{p.asset}</Link>
+                          </td>
+                          <td className="num">
+                            <MetricCell m={p.realizedPnl} signed />
+                          </td>
+                          <td className="num">
+                            <MetricCell m={p.totalPnl} signed />
+                          </td>
+                          <td>
+                            <PositionLabels labels={p.labels} />
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </details>
+            </section>
+          )}
+        </>
+      )}
+    </main>
   );
 }

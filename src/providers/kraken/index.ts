@@ -2,10 +2,12 @@ import { InvalidCredentialsInputError, type ProviderCredentials, type ProviderDe
 import { isValidKrakenSecret } from "./auth";
 import { KrakenClient, type KrakenClientOptions } from "./client";
 import { KRAKEN_FEE_CREDIT_ASSETS } from "./mapper";
+import { KrakenMarketData } from "./market-data";
 import { PROVIDER_TYPE } from "./normalizer";
 import { DANGEROUS_PERMISSIONS, OPTIONAL_PERMISSIONS, PERMISSION_LABELS, REQUIRED_PERMISSIONS } from "./permissions";
 import { KrakenProvider, PERMISSION_WARNING } from "./provider";
 
+export { KrakenMarketData } from "./market-data";
 export { KrakenProvider, PERMISSION_WARNING } from "./provider";
 
 export function krakenCredentialsFrom(credentials: ProviderCredentials): { apiKey: string; apiSecret: string } {
@@ -43,4 +45,6 @@ export const krakenDefinition: ProviderDefinition = {
   },
   feeCreditAssets: KRAKEN_FEE_CREDIT_ASSETS,
   createProvider: (providerAccountId, credentials) => createKrakenProvider(providerAccountId, credentials),
+  // Public endpoints only: no credentials are involved in price lookups.
+  createMarketData: () => new KrakenMarketData(new KrakenClient({})),
 };

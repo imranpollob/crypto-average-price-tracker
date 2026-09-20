@@ -58,7 +58,8 @@ function defaultSleep(ms: number): Promise<void> {
 }
 
 export interface KrakenClientOptions {
-  readonly credentials: KrakenCredentials;
+  /** Omit for a public-only client (market data); private calls then fail. */
+  readonly credentials?: KrakenCredentials;
   readonly baseUrl?: string;
   readonly fetch?: FetchLike;
   readonly context?: KrakenKeyContext;
@@ -86,7 +87,7 @@ function encodeForm(params: Params): string {
  */
 export class KrakenClient {
   private readonly apiKey: string;
-  private readonly sign: Signer;
+  private readonly sign: Signer | null;
   private readonly baseUrl: string;
   private readonly fetchImpl: FetchLike;
   private readonly context: KrakenKeyContext;
@@ -97,11 +98,11 @@ export class KrakenClient {
   private readonly signal?: AbortSignal;
 
   constructor(options: KrakenClientOptions) {
-    this.apiKey = options.credentials.apiKey.trim();
-    this.sign = createSigner(options.credentials.apiSecret);
+    this.apiKey = options.credentials?.apiKey.trim() ?? "";
+    this.sign = options.credentials ? createSigner(options.credentials.apiSecret) : null;
     this.baseUrl = options.baseUrl ?? KRAKEN_BASE_URL;
     this.fetchImpl = options.fetch ?? (globalThis.fetch as unknown as FetchLike);
-    this.context = options.context ?? sharedKeyContext(this.apiKey);
+    this.context = options.context ?? (options.credentials ? sharedKeyContext(this.apiKey) : createKeyContext());
     this.now = options.now ?? Date.now;
     this.sleep = options.sleep ?? defaultSleep;
     this.maxAttempts = options.maxAttempts ?? 4;
@@ -122,6 +123,8 @@ export class KrakenClient {
 
   /** Signed POST to /0/private/<method>; its call-counter cost comes from KRAKEN_CALL_COST. */
   privatePost<T>(method: string, params: Params = {}): Promise<T> {
+    const sign = this.sign;
+    if (!sign) return Promise.reject(new ProviderError("invalid_credentials", `Kraken ${method} requires API credentials`, false));
     const cost = callCost(method);
     // Serialize per key: nonces must reach Kraken in increasing order.
     const run = this.context.queue.then(() =>
@@ -134,7 +137,7 @@ export class KrakenClient {
           method: "POST",
           headers: {
             "API-Key": this.apiKey,
-            "API-Sign": this.sign(path, nonce, body),
+            "API-Sign": sign(path, nonce, body),
             "Content-Type": "application/x-www-form-urlencoded; charset=utf-8",
           },
           body,

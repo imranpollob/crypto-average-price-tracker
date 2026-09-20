@@ -26,9 +26,9 @@ import { buildSyncDiagnostics, diagnosticsText, type SyncDiagnostics } from "../
  * provider is built; nothing returned from this module contains them.
  */
 
-const registry = createDefaultRegistry();
+export const registry = createDefaultRegistry();
 /** Reporting in USD; fee-credit assets declared by providers are not portfolio assets. */
-const config = createAccountingConfig(
+export const config = createAccountingConfig(
   "USD",
   DEFAULT_CASH_ASSETS,
   registry.list().flatMap((d) => d.feeCreditAssets ?? []),
@@ -48,7 +48,7 @@ interface AppContext {
 
 const g = globalThis as unknown as { __portfolioApp?: AppContext };
 
-function app(): AppContext {
+export function app(): AppContext {
   if (!g.__portfolioApp) {
     const db = getDb();
     const key = loadOrCreateKey({ env: process.env["APP_ENCRYPTION_KEY"], keyFile: "./data/master.key" });
@@ -101,7 +101,7 @@ function uiState(code: ProviderErrorCode): ConnectionUiState {
 }
 
 /** MVP: one account per provider type. */
-async function accountIdFor(providerType: string): Promise<string | null> {
+export async function accountIdFor(providerType: string): Promise<string | null> {
   const account = await app().db.providerAccount.findFirst({
     where: { provider: { type: providerType } },
     orderBy: { createdAt: "asc" },

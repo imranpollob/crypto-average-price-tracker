@@ -1,0 +1,37 @@
+import type { PositionLabel } from "@/server/app/portfolio-service";
+import { REASON_LABEL } from "./format";
+
+const PRICE_REASON: Record<string, string> = {
+  no_direct_market: "no direct USD market on Kraken",
+  no_price_returned: "Kraken returned no price",
+  not_fetched: "not fetched yet",
+};
+
+export function labelText(l: PositionLabel): string {
+  switch (l.kind) {
+    case "complete":
+      return "Complete";
+    case "fifo_estimated":
+      return "FIFO estimated";
+    case "cost_basis_incomplete":
+      return l.lotsNeedingValuation > 0
+        ? `Cost basis incomplete — ${l.lotsNeedingValuation} ${l.lotsNeedingValuation === 1 ? "lot needs" : "lots need"} valuation`
+        : "Cost basis incomplete";
+    case "price_unavailable":
+      return `Price unavailable (${PRICE_REASON[l.reason] ?? l.reason})`;
+    case "review_required":
+      return `Review required (${l.reasons.map((r) => REASON_LABEL[r] ?? r).join(", ")})`;
+  }
+}
+
+export function PositionLabels({ labels }: { labels: readonly PositionLabel[] }) {
+  return (
+    <span className="labels">
+      {labels.map((l) => (
+        <span key={l.kind} className={`label label-${l.kind}`}>
+          {labelText(l)}
+        </span>
+      ))}
+    </span>
+  );
+}

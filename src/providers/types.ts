@@ -1,7 +1,6 @@
 import type { Decimal } from "@/domain/decimal";
 import type {
   AssetCode,
-  AssetPair,
   NormalizedBalance,
   NormalizedLedgerEntry,
   NormalizedTrade,
@@ -99,10 +98,23 @@ export interface PortfolioProvider {
   getReconciliationTolerance?(): Promise<ReadonlyMap<AssetCode, { readonly tolerance: Decimal; readonly precision: number }>>;
 }
 
-/** Market-data source. May be the same object as a PortfolioProvider (e.g. Kraken). */
+/** Why a current price could not be provided. Prices are never guessed or converted. */
+export type PriceUnavailableReason =
+  /** The provider lists no market trading the asset directly against the quote currency. */
+  | "no_direct_market"
+  /** The market exists but returned no usable last price. */
+  | "no_price_returned";
+
+export interface CurrentPrices {
+  readonly quotes: readonly PriceQuote[];
+  readonly unavailable: readonly { readonly asset: AssetCode; readonly reason: PriceUnavailableReason }[];
+}
+
+/** Market-data source (public endpoints; no account credentials). */
 export interface MarketDataProvider {
   readonly source: ProviderType;
-  getCurrentPrices(pairs: readonly AssetPair[]): Promise<PriceQuote[]>;
+  /** Latest prices of `assets` in `quote`, from direct markets only. */
+  getCurrentPrices(assets: readonly AssetCode[], quote: AssetCode): Promise<CurrentPrices>;
 }
 
 /** Real-time events. Freshness only — REST sync remains the source of correctness. */

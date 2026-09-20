@@ -54,23 +54,48 @@ export function issueAsset(issue: EngineIssue): AssetCode | null {
   return "asset" in issue ? issue.asset : null;
 }
 
+export interface PositionOptions {
+  /**
+   * Quantity below which a history shortfall is a provider precision residual,
+   * not missing history (e.g. the difference already classified by
+   * reconciliation as within the provider's reporting precision). Such a
+   * residual — a sale slightly larger than every lot ever acquired — is shown
+   * as-is but does not make the position's figures incomplete. Default: none.
+   */
+  readonly residualTolerance?: Decimal;
+}
+
+function isResidual(issue: EngineIssue, tolerance: Decimal): boolean {
+  if (!tolerance.greaterThan(0)) return false;
+  if (issue.code === "insufficient_history") return issue.shortfall.lessThanOrEqualTo(tolerance);
+  if (issue.code === "unmatched_sale") return issue.unmatchedQuantity.lessThanOrEqualTo(tolerance);
+  return false;
+}
+
 export function calculatePositionMetrics(
   engine: LotEngineResult,
   asset: AssetCode,
   currentPrice: Decimal | null,
+  options: PositionOptions = {},
 ): PositionMetrics {
+  const tolerance = options.residualTolerance ?? ZERO;
   const lots = engine.lots.filter((l) => l.asset === asset);
   const disposals = engine.disposals.filter((d) => d.disposal.asset === asset);
   const allocations = engine.allocations.filter((a) => a.asset === asset);
-  const issues = engine.issues.filter((i) => issueAsset(i) === asset);
+  const issues = engine.issues.filter((i) => issueAsset(i) === asset && !isResidual(i, tolerance));
   const has = (code: EngineIssue["code"]) => issues.some((i) => i.code === code);
   const count = (code: EngineIssue["code"]) => issues.filter((i) => i.code === code).length;
 
-  const holdings = sum(lots.map((l) => l.originalQuantity)).minus(
+  const historyHoldings = sum(lots.map((l) => l.originalQuantity)).minus(
     sum(disposals.map((d) => d.disposal.quantity)),
   );
   const openLots = lots.filter((l) => l.remainingQuantity.greaterThan(0));
   const openLotQuantity = sum(openLots.map((l) => l.remainingQuantity));
+  // Tolerated residuals (see PositionOptions): a position within the residual
+  // of zero is closed (the provider holds nothing; no price is needed), and a
+  // gap between history and open lots within it means the open lots are held.
+  const residual = (d: Decimal) => tolerance.greaterThan(0) && d.abs().lessThanOrEqualTo(tolerance);
+  const holdings = residual(historyHoldings) ? ZERO : residual(historyHoldings.minus(openLotQuantity)) ? openLotQuantity : historyHoldings;
 
   // Problems that make any lot-based figure unreliable.
   const qualityReasons = dataQualityReasons(issues);
@@ -96,7 +121,7 @@ export function calculatePositionMetrics(
     costBasis = incomplete(openReasons);
     averageCost = incomplete(openReasons);
   } else {
-    if (!openLotQuantity.equals(holdings)) {
+    if (!openLotQuantity.equals(holdings) && !residual(openLotQuantity.minus(holdings))) {
       // Cannot happen when every disposal is fully and validly matched.
       throw new Error(
         `Invariant violated for ${asset}: open lots ${openLotQuantity.toFixed()} ≠ holdings ${holdings.toFixed()}`,
@@ -119,7 +144,7 @@ export function calculatePositionMetrics(
   const sales = disposals.filter((d) => d.disposal.kind === "sale");
   const saleAllocations = allocations.filter((a) => a.kind === "sale");
   const realizedReasons = [...structural];
-  if (sales.some((d) => d.unmatchedQuantity.greaterThan(0))) realizedReasons.push("unmatched_sale");
+  if (sales.some((d) => d.unmatchedQuantity.greaterThan(tolerance))) realizedReasons.push("unmatched_sale");
   realizedReasons.push(...unknownProceedsReasons(sales));
   realizedReasons.push(
     ...unknownCostReasons(

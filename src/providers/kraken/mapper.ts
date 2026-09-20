@@ -108,6 +108,13 @@ const BUCKET_SUFFIX = /^(.+)\.(S|M|B|F|HOLD)$/;
 
 const PLAIN_CODE = /^[A-Z0-9]+(\.[A-Z0-9]+)?$/;
 
+/** A tradable Kraken market: its pair key (as used by the Ticker endpoint) and raw asset ids. */
+export interface KrakenMarket {
+  readonly key: string;
+  readonly base: string;
+  readonly quote: string;
+}
+
 export interface ResolvedPair {
   readonly base: AssetCode;
   readonly quote: AssetCode;
@@ -119,6 +126,7 @@ export class KrakenAssetMapper {
   private readonly altnames = new Map<string, string>();
   private readonly pairs = new Map<string, { base: string; quote: string }>();
   private readonly precisionByCanonical = new Map<AssetCode, number>();
+  private readonly markets: KrakenMarket[] = [];
 
   constructor(assets: KrakenAssetsResult = {}, assetPairs: KrakenAssetPairsResult = {}) {
     for (const [id, info] of Object.entries(assets)) {
@@ -129,7 +137,10 @@ export class KrakenAssetMapper {
       this.pairs.set(key, { base: p.base, quote: p.quote });
       if (typeof p.altname === "string") this.pairs.set(p.altname, { base: p.base, quote: p.quote });
       if (typeof p.wsname === "string") this.pairs.set(p.wsname, { base: p.base, quote: p.quote });
+      // Dark-pool books (".d") have no public last price; delisted pairs have no current one.
+      if (!key.endsWith(".d") && p.status !== "delisted") this.markets.push({ key, base: p.base, quote: p.quote });
     }
+    this.markets.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
     // Smallest representable unit per canonical asset, for precision-aware
     // reconciliation. Where several raw ids alias to one canonical asset
     // (e.g. SOL / SOL03), the coarsest (smallest) precision wins: a
@@ -161,6 +172,21 @@ export class KrakenAssetMapper {
     const altname =
       this.altnames.get(baseId) ?? LEGACY_IDS[baseId] ?? XSTOCK_LEGACY_BASE_IDS[baseId] ?? KRAKEN_BONDED_ASSET_ALIASES[baseId] ?? baseId;
     return CANONICAL_OVERRIDES[altname] ?? altname;
+  }
+
+  /**
+   * The listed market trading `asset` directly against `quote` (canonical
+   * codes), or null. No conversion through a third asset is ever attempted.
+   */
+  marketFor(asset: AssetCode, quote: AssetCode): KrakenMarket | null {
+    for (const m of this.markets) {
+      try {
+        if (this.canonicalAsset(m.base) === asset && this.canonicalAsset(m.quote) === quote) return m;
+      } catch {
+        // A pair with an unrecognizable asset id cannot be this market.
+      }
+    }
+    return null;
   }
 
   /** Decimal places Kraken itself represents this canonical asset with, or null if unknown. */

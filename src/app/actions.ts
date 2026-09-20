@@ -2,7 +2,8 @@
 
 import "server-only";
 import { revalidatePath } from "next/cache";
-import { connectProvider, type ConnectResult, syncProvider, type SyncSummary } from "@/server/app/provider-accounts";
+import { pollStatus, syncNow } from "@/server/app/portfolio";
+import { connectProvider, type ConnectResult, type SyncSummary } from "@/server/app/provider-accounts";
 
 /** The MVP screen manages the Kraken account; the services themselves are provider-agnostic. */
 const PROVIDER = "kraken";
@@ -21,14 +22,20 @@ export async function connectKrakenAction(_prev: ConnectActionState, form: FormD
     if (typeof value === "string" && !key.startsWith("$")) credentials[key] = value;
   }
   const result = await connectProvider(PROVIDER, credentials);
-  if (result.state === "connected") revalidatePath("/");
+  if (result.state === "connected") revalidatePath("/", "layout");
   return result;
 }
 
 export type SyncActionState = SyncSummary | null;
 
+/** Account sync + reconciliation → lot rebuild → prices. Joins a sync that is already running. */
 export async function syncNowAction(_prev: SyncActionState): Promise<SyncActionState> {
-  const result = await syncProvider(PROVIDER);
-  revalidatePath("/");
-  return result;
+  const outcome = await syncNow();
+  revalidatePath("/", "layout");
+  return { ok: outcome.ok, message: outcome.message };
+}
+
+/** Client poller: refreshes prices when due (never account history) and reports what changed. */
+export async function pollAction(): Promise<{ stamp: string; syncing: boolean }> {
+  return pollStatus();
 }

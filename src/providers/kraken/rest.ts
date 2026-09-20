@@ -7,6 +7,7 @@ import type {
   KrakenBalanceResult,
   KrakenLedgerRow,
   KrakenLedgersResult,
+  KrakenTickerResult,
   KrakenTradeRow,
   KrakenTradesHistoryResult,
 } from "./types";
@@ -124,4 +125,9 @@ export function fetchAssets(client: KrakenClient): Promise<KrakenAssetsResult> {
 
 export function fetchAssetPairs(client: KrakenClient): Promise<KrakenAssetPairsResult> {
   return client.publicGet<KrakenAssetPairsResult>("AssetPairs");
+}
+
+/** Last-trade prices for the given pair keys (one request for all of them). */
+export function fetchTicker(client: KrakenClient, pairKeys: readonly string[]): Promise<KrakenTickerResult> {
+  return client.publicGet<KrakenTickerResult>("Ticker", { pair: pairKeys.join(",") });
 }

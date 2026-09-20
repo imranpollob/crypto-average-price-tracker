@@ -187,10 +187,10 @@ This app handles financial data and exchange credentials.
 |---|---|---|
 | 1 | Foundation: domain models, provider abstraction, decimal math, lot engine, P/L engine, schema, sync orchestration, tests | ✅ Done |
 | 2 | Kraken REST adapter, credentials, historical import, ledger, balances, reconciliation | ✅ Done |
-| 3 | Lot workflow: persistence of lots and matches, manual matching | ⏳ Next |
-| 4 | Portfolio metrics service with live prices | Planned |
-| 5 | UI: overview, asset detail, lots, matching, review | Planned |
-| 6 | Reliable sync: startup recovery wiring, Sync Now, periodic reconciliation, offline handling | Planned |
+| 3 | Lot workflow: persistence of lots and matches, manual matching, minimal lot-review screen (`/lots`) | ✅ Done |
+| 4 | Portfolio metrics with current Kraken REST prices (cached, refreshed ~every 30–60 s); provisional FIFO for unassigned quantity | ✅ Done (MVP) |
+| 5 | UI: portfolio dashboard (`/`), asset detail (`/assets/[asset]`), lots & matching (`/lots`), settings (`/settings`) | ✅ Done (MVP) |
+| 6 | Reliable sync: startup recovery, Sync Now (single-flight), offline handling with cached data; account data re-syncs only at startup and on demand | ✅ Done (MVP) |
 | 7 | Kraken WebSocket: live trades and prices, reconnect then REST reconciliation | Planned |
 
 ## MVP limitations

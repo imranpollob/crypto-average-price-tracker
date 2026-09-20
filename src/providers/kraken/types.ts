@@ -73,7 +73,16 @@ export interface KrakenAssetPair {
   readonly wsname?: string;
   readonly base: string;
   readonly quote: string;
+  /** e.g. "online", "cancel_only", "delisted". */
+  readonly status?: string;
 }
+
+/** Ticker row; `c` = [last trade price, lot volume]. Only the last price is used. */
+export interface KrakenTickerRow {
+  readonly c?: readonly [string, string];
+}
+
+export type KrakenTickerResult = Readonly<Record<string, KrakenTickerRow>>;
 
 export type KrakenAssetsResult = Readonly<Record<string, KrakenAssetInfo>>;
 export type KrakenAssetPairsResult = Readonly<Record<string, KrakenAssetPair>>;

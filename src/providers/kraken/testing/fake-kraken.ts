@@ -16,7 +16,7 @@ import type { KrakenAssetInfo, KrakenAssetPair, KrakenLedgerRow, KrakenTradeRow 
  * Contains no real data.
  */
 
-type Method = "Balance" | "TradesHistory" | "Ledgers" | "GetApiKeyInfo" | "Assets" | "AssetPairs";
+type Method = "Balance" | "TradesHistory" | "Ledgers" | "GetApiKeyInfo" | "Assets" | "AssetPairs" | "Ticker";
 
 /** Permission each private endpoint needs (GetApiKeyInfo needs none). */
 const ENDPOINT_PERMISSION: Partial<Record<Method, string>> = {
@@ -90,6 +90,8 @@ export class FakeKraken {
   pairs: Record<string, KrakenAssetPair> = { ...DEFAULT_PAIRS };
   readonly trades = new Map<string, KrakenTradeRow>();
   readonly ledger = new Map<string, KrakenLedgerRow>();
+  /** Last trade price per pair key, served by Ticker. */
+  tickers: Record<string, string> = {};
   /** Replace the ledger-derived balances (e.g. to create a mismatch). */
   balanceOverride: Record<string, string> | null = null;
   /** Documented permission strings granted to the key (GetApiKeyInfo). */
@@ -253,6 +255,12 @@ export class FakeKraken {
         return ok(this.assets);
       case "AssetPairs":
         return ok(this.pairs);
+      case "Ticker": {
+        // Like Kraken: one unknown pair fails the whole request.
+        const keys = (params["pair"] ?? "").split(",").filter(Boolean);
+        if (keys.length === 0 || keys.some((k) => !this.pairs[k])) return respond(200, JSON.stringify({ error: ["EQuery:Unknown asset pair"] }));
+        return ok(Object.fromEntries(keys.filter((k) => this.tickers[k] !== undefined).map((k) => [k, { a: ["0", "1", "1.000"], c: [this.tickers[k], "1.00000000"] }])));
+      }
       case "GetApiKeyInfo":
         if (!this.supportsKeyInfo) return respond(200, JSON.stringify({ error: ["EGeneral:Unknown method"] }));
         return ok({
