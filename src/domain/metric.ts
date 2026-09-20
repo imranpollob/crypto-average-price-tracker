@@ -24,6 +24,8 @@ export type IncompleteReason =
   | "unsupported_activity"
   /** Calculated holdings disagree with the provider-reported balance. */
   | "reconciliation_mismatch"
+  /** The automatic lot matching method (HIFO) cannot rank an eligible lot of unknown cost. */
+  | "ambiguous_automatic_match"
   /** No current market price is available. */
   | "missing_price";
 

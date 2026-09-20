@@ -2,7 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Fragment } from "react";
 import { getAssetPage } from "@/server/app/portfolio";
-import { date, money, price } from "../../format";
+import { date, METHOD_LABEL, money, price } from "../../format";
 import { AssetLotReview, LotTable } from "../../lots/asset-lot-review";
 import { MetricCell } from "../../metric-cell";
 import { labelText } from "../../position-labels";
@@ -15,7 +15,10 @@ export default async function AssetPage({ params }: { params: Promise<{ asset: s
   const { status, view, lots } = await getAssetPage(asset);
   if (!view) notFound();
   const p = view.position;
-  const incomplete = p.labels.filter((l) => l.kind === "cost_basis_incomplete" || l.kind === "review_required" || l.kind === "price_unavailable");
+  const incomplete = p.labels.filter(
+    (l) => l.kind === "cost_basis_incomplete" || l.kind === "review_required" || l.kind === "price_unavailable" || l.kind === "automatic_undetermined",
+  );
+  const method = METHOD_LABEL[p.matching.method];
 
   return (
     <main className="container wide">
@@ -77,7 +80,15 @@ export default async function AssetPage({ params }: { params: Promise<{ asset: s
             <MetricCell m={p.totalPnl} signed />
           </dd>
           <dt>Lot matching</dt>
-          <dd>{p.fifoEstimated ? <span className="warning">FIFO estimated (provisional)</span> : "Specific/manual"}</dd>
+          <dd>
+            {!p.matching.automatic ? (
+              "Specific/manual"
+            ) : (
+              <span className="warning">
+                {p.matching.manual ? `Manual + ${METHOD_LABEL[p.matching.method]}` : `Automatic: ${METHOD_LABEL[p.matching.method]}`}
+              </span>
+            )}
+          </dd>
           {incomplete.map((l) => (
             <Fragment key={l.kind}>
               <dt>Attention</dt>
@@ -87,12 +98,15 @@ export default async function AssetPage({ params }: { params: Promise<{ asset: s
         </dl>
       </section>
 
-      {view.provisionalMatches.length > 0 && (
+      {view.automaticMatches.length > 0 && (
         <section className="card">
-          <h2>Provisional FIFO matches ({view.provisionalMatches.length})</h2>
+          <h2>
+            Automatic {method} matches ({view.automaticMatches.length})
+          </h2>
           <p className="muted">
-            Quantity you have not assigned is estimated oldest-lot-first so the figures above are complete. These are not saved and
-            are not your decisions; <Link href={`/lots/${encodeURIComponent(asset)}`}>assign specific lots</Link> to replace them.
+            Quantity you have not assigned to lots is matched by the automatic lot matching method ({method}, see{" "}
+            <Link href="/settings">Settings</Link>). These are calculated, not saved, and are not your decisions;{" "}
+            <Link href={`/lots/${encodeURIComponent(asset)}`}>assign specific lots</Link> to replace them.
           </p>
           <div className="table-wrap">
             <table>
@@ -110,7 +124,7 @@ export default async function AssetPage({ params }: { params: Promise<{ asset: s
                 </tr>
               </thead>
               <tbody>
-                {view.provisionalMatches.map((m) => (
+                {view.automaticMatches.map((m) => (
                   <tr key={m.matchId}>
                     <td>{date(m.disposedAt)}</td>
                     <td>{m.kind === "sale" ? "Sale" : "Transfer out"}</td>
@@ -133,7 +147,7 @@ export default async function AssetPage({ params }: { params: Promise<{ asset: s
 
       <section className="card">
         <h2>Open lots ({view.openLots.length})</h2>
-        {view.provisionalMatches.length > 0 && <p className="muted">Remaining quantities include the provisional FIFO matches above.</p>}
+        {view.automaticMatches.length > 0 && <p className="muted">Remaining quantities include the automatic {method} matches above.</p>}
         <LotTable lots={view.openLots} asset={asset} />
       </section>
 

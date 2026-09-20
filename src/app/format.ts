@@ -61,6 +61,7 @@ export const REASON_LABEL: Record<string, string> = {
   unvalued_fee: "fee of unknown value",
   unsupported_activity: "unsupported activity",
   reconciliation_mismatch: "balance mismatch",
+  ambiguous_automatic_match: "HIFO cannot be determined because an eligible lot has unknown cost basis",
   missing_price: "no current price",
 };
 
@@ -69,3 +70,5 @@ export function percent(value: string | null): string {
   const d = dec(value);
   return `${d.isNegative() ? "−" : d.isZero() ? "" : "+"}${d.abs().toFixed(2)}%`;
 }
+
+export const METHOD_LABEL: Record<string, string> = { fifo: "FIFO", lifo: "LIFO", hifo: "HIFO" };

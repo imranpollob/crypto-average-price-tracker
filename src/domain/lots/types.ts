@@ -222,7 +222,9 @@ export type DataQualityReason =
   | "unvalued_fee"
   | "unsupported_activity"
   | "insufficient_history"
-  | "reconciliation_mismatch";
+  | "reconciliation_mismatch"
+  /** The automatic lot matching method could not decide which lots a disposal used. */
+  | "ambiguous_automatic_match";
 
 export interface DataQualityFlag {
   readonly asset: AssetCode;

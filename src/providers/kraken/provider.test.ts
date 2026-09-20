@@ -193,7 +193,7 @@ describe("pagination", () => {
     expect(fake.callsTo("TradesHistory") + fake.callsTo("Ledgers")).toBe(150);
     expect(clock.sleptMs).toBeGreaterThan(500_000);
     expect(fake.rateLimitErrors).toBe(0);
-  });
+  }, 30_000); // heavy simulation (3,000 signed requests): slow under a fully parallel test run
 
   it("sends a fixed window: end = sync end, start exclusive", async () => {
     const fake = fakeWithTrades(3);

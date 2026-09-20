@@ -2,7 +2,7 @@ import Link from "next/link";
 import { Fragment } from "react";
 import { getDashboard } from "@/server/app/portfolio";
 import type { PositionView, Total } from "@/server/app/portfolio-service";
-import { money, price } from "./format";
+import { METHOD_LABEL, money, price } from "./format";
 import { MetricCell } from "./metric-cell";
 import { PositionLabels } from "./position-labels";
 import { StatusBar } from "./status-bar";
@@ -62,11 +62,12 @@ export default async function PortfolioPage() {
                 </Fragment>
               ))}
             </dl>
-            {portfolio.fifoEstimatedAssets > 0 && (
+            {portfolio.automaticAssets > 0 && (
               <p className="muted">
-                Includes provisional FIFO matches for {portfolio.fifoEstimatedAssets} asset{portfolio.fifoEstimatedAssets === 1 ? "" : "s"}:
-                sales and transfers you have not assigned to specific lots are estimated oldest-lot-first. This is a calculation
-                fallback, not an assumption about your strategy — <Link href="/lots">assign lots</Link> to replace it.
+                Includes automatic {METHOD_LABEL[portfolio.method]} matches for {portfolio.automaticAssets} asset
+                {portfolio.automaticAssets === 1 ? "" : "s"}: sales and transfers you have not assigned to specific lots use the{" "}
+                <Link href="/settings">automatic lot matching method</Link>. Manual lot matches always override it —{" "}
+                <Link href="/lots">assign lots</Link> to replace it.
               </p>
             )}
             {(t.totalPnl.excluded.length > 0 || t.currentValue.excluded.length > 0) && (

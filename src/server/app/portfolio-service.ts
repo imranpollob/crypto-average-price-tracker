@@ -1,6 +1,6 @@
 import { type AccountingConfig, isCash, isTracked } from "@/domain/accounting/config";
 import { type Decimal, dec, sum } from "@/domain/decimal";
-import { runWithFifoFallback } from "@/domain/lots/fifo-fallback";
+import { type AutomaticMatchingMethod, runWithAutomaticMatching } from "@/domain/lots/automatic-matching";
 import { deriveAssetFlows } from "@/domain/lots/flows";
 import type { LotEngineResult } from "@/domain/lots/types";
 import type { IncompleteReason } from "@/domain/metric";
@@ -13,11 +13,12 @@ import { s2d } from "../db/codec";
 import { HistoryRepository } from "../db/history-repository";
 import { type AllocationView, allocationViews, type LotService, type LotView, lotView, type MetricView, metricView } from "./lot-service";
 import type { CachedPrice, PriceService } from "./price-service";
+import type { SettingsService } from "./settings-service";
 
 /**
  * Portfolio figures per asset and in total, from stored history + manual lot
- * decisions + a provisional FIFO fallback for anything not yet assigned, and
- * the latest cached prices. Nothing here is persisted.
+ * decisions + the selected automatic lot matching method for anything not yet
+ * assigned, and the latest cached prices. Nothing here is persisted.
  *
  * Totals only add figures that are known: an asset whose P/L is incomplete is
  * excluded from the P/L totals and listed, never silently counted.
@@ -25,7 +26,10 @@ import type { CachedPrice, PriceService } from "./price-service";
 
 export type PositionLabel =
   | { readonly kind: "complete" }
-  | { readonly kind: "fifo_estimated" }
+  /** Some quantity is assigned by the automatic method (alongside manual matches if `withManual`). */
+  | { readonly kind: "automatic"; readonly method: AutomaticMatchingMethod; readonly withManual: boolean }
+  /** The automatic method could not decide (HIFO with an unknown-cost lot eligible). */
+  | { readonly kind: "automatic_undetermined"; readonly method: AutomaticMatchingMethod }
   | { readonly kind: "cost_basis_incomplete"; readonly lotsNeedingValuation: number }
   | { readonly kind: "price_unavailable"; readonly reason: PriceUnavailableReason | "not_fetched" }
   | { readonly kind: "review_required"; readonly reasons: readonly IncompleteReason[] };
@@ -43,8 +47,8 @@ export interface PositionView {
   readonly unrealizedPnl: MetricView;
   readonly unrealizedPnlPercent: MetricView;
   readonly totalPnl: MetricView;
-  /** Some sale/transfer quantity of this asset is assigned by provisional FIFO. */
-  readonly fifoEstimated: boolean;
+  /** How this asset's sales/transfers are assigned to lots. */
+  readonly matching: { readonly manual: boolean; readonly automatic: boolean; readonly method: AutomaticMatchingMethod };
   /** Most important first. */
   readonly labels: readonly PositionLabel[];
 }
@@ -67,15 +71,17 @@ export interface PortfolioView {
     readonly unrealizedPnl: Total;
     readonly totalPnl: Total;
   };
-  readonly fifoEstimatedAssets: number;
+  readonly method: AutomaticMatchingMethod;
+  /** Assets with some quantity assigned by the automatic method. */
+  readonly automaticAssets: number;
 }
 
 export interface AssetPortfolioView {
   readonly position: PositionView;
-  /** Lots as they stand with provisional FIFO applied. */
+  /** Lots as they stand with the automatic matches applied. */
   readonly openLots: readonly LotView[];
-  /** Provisional FIFO assignments (not user decisions). */
-  readonly provisionalMatches: readonly AllocationView[];
+  /** Assignments made by the automatic method (not user decisions). */
+  readonly automaticMatches: readonly AllocationView[];
 }
 
 const VALUATION_REASONS: ReadonlySet<IncompleteReason> = new Set(["unknown_cost_basis", "unknown_proceeds", "unvalued_fee"]);
@@ -88,6 +94,7 @@ export class PortfolioService {
     private readonly config: AccountingConfig,
     private readonly lots: LotService,
     private readonly prices: PriceService,
+    private readonly settings: SettingsService,
   ) {
     this.history = new HistoryRepository(db);
   }
@@ -107,8 +114,8 @@ export class PortfolioService {
   }
 
   async compute(providerAccountId: string): Promise<PortfolioView> {
-    const { result, provisional, tolerances, prices } = await this.state(providerAccountId);
-    const views = assetsOf(result).map((asset) => this.positionView(result, provisional, asset, prices.get(asset) ?? null, tolerances.get(asset)));
+    const { result, automatic, method, tolerances, prices } = await this.state(providerAccountId);
+    const views = assetsOf(result).map((asset) => this.positionView(result, automatic, method, asset, prices.get(asset) ?? null, tolerances.get(asset)));
     const positions = views.filter((p) => dec(p.holdings).greaterThan(0));
     const closed = views.filter((p) => !dec(p.holdings).greaterThan(0));
     const balances = await this.history.loadLatestBalances(providerAccountId);
@@ -125,29 +132,31 @@ export class PortfolioService {
         unrealizedPnl: total(positions, (p) => p.unrealizedPnl),
         totalPnl: total(views, (p) => p.totalPnl),
       },
-      fifoEstimatedAssets: views.filter((p) => p.fifoEstimated).length,
+      method,
+      automaticAssets: views.filter((p) => p.matching.automatic).length,
     };
   }
 
   async asset(providerAccountId: string, asset: AssetCode): Promise<AssetPortfolioView | null> {
-    const { result, provisional, tolerances, prices } = await this.state(providerAccountId);
+    const { result, automatic, method, tolerances, prices } = await this.state(providerAccountId);
     if (!assetsOf(result).includes(asset)) return null;
     const alloc = allocationViews(result);
     return {
-      position: this.positionView(result, provisional, asset, prices.get(asset) ?? null, tolerances.get(asset)),
+      position: this.positionView(result, automatic, method, asset, prices.get(asset) ?? null, tolerances.get(asset)),
       openLots: result.lots.filter((l) => l.asset === asset && l.remainingQuantity.greaterThan(0)).map(lotView),
-      provisionalMatches: result.allocations.filter((a) => a.asset === asset && provisional.has(a.matchId)).map(alloc),
+      automaticMatches: result.allocations.filter((a) => a.asset === asset && automatic.has(a.matchId)).map(alloc),
     };
   }
 
   private async state(providerAccountId: string) {
-    const [input, tolerances, prices] = await Promise.all([
+    const [input, tolerances, prices, method] = await Promise.all([
       this.lots.loadInput(providerAccountId),
       this.residualTolerances(providerAccountId),
       this.prices.cached(),
+      this.settings.automaticLotMatchingMethod(),
     ]);
-    const { result, provisionalMatchIds } = runWithFifoFallback(input);
-    return { result, provisional: provisionalMatchIds, tolerances, prices };
+    const { result, automaticMatchIds } = runWithAutomaticMatching(input, method);
+    return { result, automatic: automaticMatchIds, method, tolerances, prices };
   }
 
   /**
@@ -166,26 +175,30 @@ export class PortfolioService {
 
   private positionView(
     result: LotEngineResult,
-    provisional: ReadonlySet<string>,
+    automaticIds: ReadonlySet<string>,
+    method: AutomaticMatchingMethod,
     asset: AssetCode,
     price: CachedPrice | null,
     residualTolerance: Decimal | undefined,
   ): PositionView {
     const m = calculatePositionMetrics(result, asset, price?.price ?? null, { residualTolerance });
     const held = m.holdings.greaterThan(0);
-    const fifoEstimated = result.allocations.some((a) => a.asset === asset && provisional.has(a.matchId));
+    const allocations = result.allocations.filter((a) => a.asset === asset);
+    const automatic = allocations.some((a) => automaticIds.has(a.matchId));
+    const manual = allocations.some((a) => !automaticIds.has(a.matchId));
     const reasons = new Set<IncompleteReason>(
       [m.costBasis, m.realizedPnl, m.unrealizedPnl, m.totalPnl, m.currentValue].flatMap((x) => (x.status === "incomplete" ? x.reasons : [])),
     );
     const labels: PositionLabel[] = [];
-    const review = [...reasons].filter((r) => !VALUATION_REASONS.has(r) && r !== "missing_price");
+    if (reasons.has("ambiguous_automatic_match")) labels.push({ kind: "automatic_undetermined", method });
+    const review = [...reasons].filter((r) => !VALUATION_REASONS.has(r) && r !== "missing_price" && r !== "ambiguous_automatic_match");
     if (review.length > 0) labels.push({ kind: "review_required", reasons: review });
     if ([...reasons].some((r) => VALUATION_REASONS.has(r))) {
       const lotsNeedingValuation = result.issues.filter((i) => i.code === "unknown_cost_basis" && issueAsset(i) === asset).length;
       labels.push({ kind: "cost_basis_incomplete", lotsNeedingValuation });
     }
     if (held && !price) labels.push({ kind: "price_unavailable", reason: this.prices.unavailableReason(asset) ?? "not_fetched" });
-    if (fifoEstimated) labels.push({ kind: "fifo_estimated" });
+    if (automatic) labels.push({ kind: "automatic", method, withManual: manual });
     if (labels.length === 0) labels.push({ kind: "complete" });
 
     return {
@@ -201,7 +214,7 @@ export class PortfolioService {
       unrealizedPnl: metricView(m.unrealizedPnl),
       unrealizedPnlPercent: metricView(m.unrealizedPnlPercent),
       totalPnl: metricView(m.totalPnl),
-      fifoEstimated,
+      matching: { manual, automatic, method },
       labels,
     };
   }

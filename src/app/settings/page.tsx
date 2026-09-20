@@ -1,7 +1,9 @@
-import { getAccountStatus } from "@/server/app/portfolio";
+import { getAccountStatus, getAutomaticLotMatchingMethod } from "@/server/app/portfolio";
 import { getProviderDiagnostics, type ProviderStatus } from "@/server/app/provider-accounts";
 import { ConnectKrakenForm, SyncNowButton } from "../kraken-forms";
+import { METHOD_LABEL } from "../format";
 import { Ago, LiveRefresh } from "../live";
+import { MatchingMethodForm } from "./matching-method-form";
 
 export const dynamic = "force-dynamic";
 
@@ -28,7 +30,7 @@ const RECONCILIATION_LABEL: Record<string, string> = {
 };
 
 export default async function SettingsPage() {
-  const status = await getAccountStatus();
+  const [status, method] = await Promise.all([getAccountStatus(), getAutomaticLotMatchingMethod()]);
   const s = status.provider;
   const diag = s.lastSuccessfulSyncAt ? await getProviderDiagnostics("kraken") : null;
   return (
@@ -56,9 +58,13 @@ export default async function SettingsPage() {
             <Ago iso={status.pricesUpdatedAt} /> (Kraken public ticker, refreshed about every 30–60 s while open)
             {status.priceError && <span className="error-text"> — last attempt failed: {status.priceError}</span>}
           </dd>
-          <dt>Matching fallback</dt>
-          <dd>FIFO, provisional — used only for quantity you have not assigned to lots; your own matches always take precedence.</dd>
+          <dt>Automatic lot matching</dt>
+          <dd>{METHOD_LABEL[method]} — for quantity you have not assigned to lots; your own matches always take precedence.</dd>
         </dl>
+      </section>
+
+      <section className="card">
+        <MatchingMethodForm current={method} />
       </section>
 
       {s.connected && !s.isCurrent && (

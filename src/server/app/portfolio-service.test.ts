@@ -11,6 +11,7 @@ import { createTestDb } from "@/test/test-db";
 import { LotService } from "./lot-service";
 import { type PortfolioView, PortfolioService, type PositionView } from "./portfolio-service";
 import { PriceService } from "./price-service";
+import { SettingsService } from "./settings-service";
 
 /** MVP portfolio figures against a real SQLite database. */
 
@@ -34,6 +35,7 @@ let src: StubSource;
 let lots: LotService;
 let prices: PriceService;
 let svc: PortfolioService;
+let settings: SettingsService;
 
 beforeEach(async () => {
   ({ db, cleanup } = await createTestDb());
@@ -43,7 +45,8 @@ beforeEach(async () => {
   src = new StubSource();
   lots = new LotService(db, config);
   prices = new PriceService(db, src, "USD");
-  svc = new PortfolioService(db, config, lots, prices);
+  settings = new SettingsService(db);
+  svc = new PortfolioService(db, config, lots, prices, settings);
 });
 afterEach(async () => {
   await cleanup();
@@ -101,9 +104,9 @@ describe("#10-14, #30 FIFO fallback in the portfolio", () => {
     const v = await compute({});
     const p = pos(v, "ADA");
     expect(val(p.realizedPnl)).toBe("300");
-    expect(p.fifoEstimated).toBe(true);
-    expect(kinds(p)).toEqual(["fifo_estimated"]);
-    expect(v.fifoEstimatedAssets).toBe(1);
+    expect(p.matching).toEqual({ manual: false, automatic: true, method: "fifo" });
+    expect(p.labels).toEqual([{ kind: "automatic", method: "fifo", withManual: false }]);
+    expect([v.method, v.automaticAssets]).toEqual(["fifo", 1]);
     expect(await db.lotMatch.count()).toBe(0);
   });
 
@@ -113,11 +116,11 @@ describe("#10-14, #30 FIFO fallback in the portfolio", () => {
     const x = sell("100", "25", { account: acct, at: day(3) });
     await seed([cheap, dear, x]);
     let p = pos(await compute({ ADA: "25" }), "ADA");
-    expect([val(p.realizedPnl), val(p.costBasis), p.fifoEstimated]).toEqual(["1500", "2000", true]);
+    expect([val(p.realizedPnl), val(p.costBasis), p.matching.automatic]).toEqual(["1500", "2000", true]);
 
     await lots.saveMatches(acct, flowId(x), [{ lotId: flowId(dear), quantity: "100" }]);
     p = pos(await svc.compute(acct), "ADA");
-    expect([val(p.realizedPnl), val(p.costBasis), p.fifoEstimated]).toEqual(["500", "1000", false]);
+    expect([val(p.realizedPnl), val(p.costBasis), p.matching.automatic]).toEqual(["500", "1000", false]);
     expect(kinds(p)).toEqual(["complete"]);
     // Total P/L does not depend on which lot was chosen.
     expect(val(p.totalPnl)).toBe("2000");
@@ -130,7 +133,7 @@ describe("#10-14, #30 FIFO fallback in the portfolio", () => {
     await seed([a, b, x]);
     await lots.saveMatches(acct, flowId(x), [{ lotId: flowId(b), quantity: "40" }]);
     const view = await svc.asset(acct, "ADA");
-    expect(view!.provisionalMatches.map((m) => [m.lotId, m.quantity])).toEqual([[flowId(a), "60"]]);
+    expect(view!.automaticMatches.map((m) => [m.lotId, m.quantity])).toEqual([[flowId(a), "60"]]);
     expect(view!.position.realizedPnl).toEqual({ status: "known", value: "1100" });
     expect(await db.lotMatch.count()).toBe(1);
   });
@@ -209,7 +212,7 @@ describe("#24, #26-29 realistic account", () => {
       "0",
       "-7.725",
     ]);
-    expect(kinds(ada)).toEqual(["fifo_estimated"]);
+    expect(kinds(ada)).toEqual(["automatic"]);
 
     // #29 BRICK has no USD market: no value, no fabricated price.
     const brick = pos(v, "BRICK");

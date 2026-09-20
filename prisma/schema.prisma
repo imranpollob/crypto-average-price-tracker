@@ -315,3 +315,13 @@ model ReconciliationResult {
   @@index([providerAccountId, createdAt])
   @@map("reconciliation_results")
 }
+
+/// Application-wide settings (provider-independent), one row per key. A missing
+/// row means the documented default.
+model AppSetting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("app_settings")
+}

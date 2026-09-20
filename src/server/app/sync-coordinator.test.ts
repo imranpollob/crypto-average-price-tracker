@@ -11,6 +11,7 @@ import { createTestDb } from "@/test/test-db";
 import { LotService } from "./lot-service";
 import { PortfolioService } from "./portfolio-service";
 import { PriceService } from "./price-service";
+import { SettingsService } from "./settings-service";
 import { SyncCoordinator } from "./sync-coordinator";
 
 /** MVP: startup recovery, Sync now, offline behaviour, no concurrent syncs. */
@@ -47,7 +48,7 @@ function app(fake: FakeKraken, startIso = "2026-09-24T12:00:00Z") {
   const syncService = new SyncService({ store: new PrismaSyncStore(db), now, config });
   const lots = new LotService(db, config, now);
   const prices = new PriceService(db, new KrakenMarketData(h.client, now), "USD", now);
-  const portfolio = new PortfolioService(db, config, lots, prices);
+  const portfolio = new PortfolioService(db, config, lots, prices, new SettingsService(db));
   const coordinator = new SyncCoordinator({
     syncService,
     lots,

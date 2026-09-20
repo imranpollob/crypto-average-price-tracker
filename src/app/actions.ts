@@ -2,7 +2,8 @@
 
 import "server-only";
 import { revalidatePath } from "next/cache";
-import { pollStatus, syncNow } from "@/server/app/portfolio";
+import { isAutomaticMatchingMethod } from "@/domain/lots/automatic-matching";
+import { pollStatus, setAutomaticLotMatchingMethod, syncNow } from "@/server/app/portfolio";
 import { connectProvider, type ConnectResult, type SyncSummary } from "@/server/app/provider-accounts";
 
 /** The MVP screen manages the Kraken account; the services themselves are provider-agnostic. */
@@ -38,4 +39,15 @@ export async function syncNowAction(_prev: SyncActionState): Promise<SyncActionS
 /** Client poller: refreshes prices when due (never account history) and reports what changed. */
 export async function pollAction(): Promise<{ stamp: string; syncing: boolean }> {
   return pollStatus();
+}
+
+export type MatchingMethodActionState = { readonly ok: boolean; readonly message: string } | null;
+
+/** Saves the automatic lot matching method. Recalculates figures only: no sync, no change to manual matches. */
+export async function matchingMethodAction(_prev: MatchingMethodActionState, form: FormData): Promise<MatchingMethodActionState> {
+  const method = form.get("method");
+  if (!isAutomaticMatchingMethod(method)) return { ok: false, message: "Choose FIFO, LIFO or HIFO." };
+  await setAutomaticLotMatchingMethod(method);
+  revalidatePath("/", "layout");
+  return { ok: true, message: `Saved. Portfolio figures now use ${method.toUpperCase()} for unmatched quantities.` };
 }

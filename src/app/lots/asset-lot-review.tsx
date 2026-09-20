@@ -6,7 +6,7 @@ import { EditMatchForm, MatchForm, ValuationForm } from "./lot-forms";
 /**
  * Specific-lot review for one asset: unresolved sales/transfers with matching
  * forms, the user's matches, lots, and values to supply. Shows stored user
- * decisions only — no provisional FIFO.
+ * decisions only — no automatic matching.
  */
 
 function disposalTitle(d: DisposalView): string {

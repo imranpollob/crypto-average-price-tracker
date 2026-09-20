@@ -26,8 +26,8 @@ export default async function AssetLotsPage({ params }: { params: Promise<{ asse
 
       <section className="card">
         <p className="muted">
-          Figures on this page use only your own lot decisions. The portfolio view fills unassigned quantity with provisional
-          FIFO; any match you save here replaces FIFO for that quantity immediately.
+          Figures on this page use only your own lot decisions. The portfolio view assigns any remaining quantity with the
+          automatic lot matching method (see Settings); a match you save here replaces it for that quantity immediately.
         </p>
         <dl className="grid">
           <dt>Holdings (from history)</dt>

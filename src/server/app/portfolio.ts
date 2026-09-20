@@ -1,10 +1,12 @@
 import "server-only";
+import type { AutomaticMatchingMethod } from "@/domain/lots/automatic-matching";
 import type { SyncState } from "@/domain/sync/status";
 import type { AssetDetail } from "./lot-service";
 import { lotAssetDetail, lotService } from "./lots";
 import { type AssetPortfolioView, type PortfolioView, PortfolioService } from "./portfolio-service";
 import { PriceService } from "./price-service";
 import { accountIdFor, app, config, getProviderStatus, type ProviderStatus, registry } from "./provider-accounts";
+import { SettingsService } from "./settings-service";
 import { type RefreshOutcome, SyncCoordinator } from "./sync-coordinator";
 
 /**
@@ -18,6 +20,7 @@ const PROVIDER = "kraken";
 export const PRICE_REFRESH_MS = 30_000;
 
 interface PortfolioContext {
+  readonly settings: SettingsService;
   readonly prices: PriceService;
   readonly portfolio: PortfolioService;
   readonly coordinator: SyncCoordinator;
@@ -31,7 +34,8 @@ function ctx(): PortfolioContext {
     const def = registry.get(PROVIDER);
     const prices = new PriceService(db, def.createMarketData?.() ?? null, config.reportingCurrency);
     const lots = lotService();
-    const portfolio = new PortfolioService(db, config, lots, prices);
+    const settings = new SettingsService(db);
+    const portfolio = new PortfolioService(db, config, lots, prices, settings);
     const coordinator = new SyncCoordinator({
       syncService,
       lots,
@@ -45,7 +49,7 @@ function ctx(): PortfolioContext {
         },
       },
     });
-    g.__portfolioContext = { prices, portfolio, coordinator };
+    g.__portfolioContext = { settings, prices, portfolio, coordinator };
   }
   return g.__portfolioContext;
 }
@@ -140,4 +144,17 @@ export async function getAccountStatus(): Promise<AccountStatus> {
 /** "Sync now": private sync + reconciliation → lot rebuild → prices. Joins a running refresh. */
 export async function syncNow(): Promise<RefreshOutcome> {
   return ctx().coordinator.syncNow();
+}
+
+export async function getAutomaticLotMatchingMethod(): Promise<AutomaticMatchingMethod> {
+  return ctx().settings.automaticLotMatchingMethod();
+}
+
+/**
+ * Change the method used for unassigned quantity. Only derived figures change:
+ * no sync, no change to imported history or to saved manual lot matches. The
+ * portfolio is computed from the setting on every read, so it applies at once.
+ */
+export async function setAutomaticLotMatchingMethod(method: AutomaticMatchingMethod): Promise<void> {
+  await ctx().settings.setAutomaticLotMatchingMethod(method);
 }
